@@ -9,11 +9,18 @@ import fitz  # PyMuPDF
 
 
 # Clients are created outside the handler for connection reuse inside Lambda
-s3_client = boto3.client("s3", config=boto3.session.Config(retries={'max_attempts': 3}))
-bedrock_runtime = boto3.client("bedrock-runtime", config=boto3.session.Config(retries={'max_attempts': 3}))
+s3_client = boto3.client(
+    "s3", config=boto3.session.Config(retries={"max_attempts": 3}, read_timeout=60)
+)
+bedrock_runtime = boto3.client(
+    "bedrock-runtime",
+    config=boto3.session.Config(retries={"max_attempts": 3}, read_timeout=60),
+)
 
 
-DEFAULT_MODEL_ID = os.environ.get("MODEL_ID", "anthropic.claude-3-5-sonnet-20241022-v2:0")
+DEFAULT_MODEL_ID = os.environ.get(
+    "MODEL_ID", "anthropic.claude-3-5-sonnet-20241022-v2:0"
+)
 DEFAULT_STAGE1_SYSTEM_PROMPT = (
     "You are an entity resolver. Parse each page, dynamically inferring categories and ignoring "
     "header information. Differentiate between summaries and supporting documentation. Generate, "
@@ -26,6 +33,7 @@ DEFAULT_STAGE2_SYSTEM_PROMPT = (
     "For each entity in this JSON object, verify that the data from the supporting documentation "
     "pages matches the data on the summary page(s), keeping in mind that data from supporting "
     "documentation may need to be aggregated to match the full scope of the summary data."
+    "If data from the summary pages is lacking supporting documentation, note that separately from mismatched data."
 )
 # DEFAULT_STAGE3_SYSTEM_PROMPT = (
 #     "Generate a concise summary containing: 1) Summary of entities that were extracted, "
@@ -49,32 +57,32 @@ def parse_s3_uri(uri: str) -> Tuple[str, str]:
     raise ValueError(f"Unsupported S3 URI: {uri}")
 
 
-def fetch_s3_text(uri: str) -> str:
+def fetch_s3_pages(uri: str) -> List[str]:
     bucket, key = parse_s3_uri(uri)
-    
+
     # Use streaming read to avoid memory issues with large files
     obj = s3_client.get_object(Bucket=bucket, Key=key)
-    content = b''
-    for chunk in obj["Body"].iter_chunks(chunk_size=1024*1024):  # 1MB chunks
+    content = b""
+    for chunk in obj["Body"].iter_chunks(chunk_size=1024 * 1024):  # 1MB chunks
         content += chunk
-    
+
     # Check if it's a PDF file
-    if key.lower().endswith('.pdf'):
+    if key.lower().endswith(".pdf"):
         doc = fitz.open(stream=content, filetype="pdf")
-        
+
         # Try to decrypt with empty password if encrypted
         if doc.needs_pass:
             doc.authenticate("")
-        
-        text = ""
+
+        pages = []
         for page_num in range(doc.page_count):
             page = doc[page_num]
-            text += page.get_text() + "\n"
-        
+            pages.append(page.get_text())
+
         doc.close()
-        return text
+        return pages
     else:
-        return content.decode("utf-8")
+        return [content.decode("utf-8")]
 
 
 def build_messages(
@@ -165,27 +173,37 @@ def lambda_handler(event, context):
     # stage3_system_prompt = DEFAULT_STAGE3_SYSTEM_PROMPT
     few_shot_examples = event.get("few_shot_examples") or []
 
-    document_text = fetch_s3_text(s3_uri)
-    stage1_system, stage1_messages = build_messages(
-        document_text,
-        user_request,
-        few_shot_examples,
-        stage1_system_prompt,
-    )
-
     model_id = event.get("model_id", DEFAULT_MODEL_ID)
     max_tokens = int(event.get("max_tokens", 1000))
     temperature = float(event.get("temperature", 0.0))
 
-    stage1_response = invoke_bedrock(
-        model_id=model_id,
-        system_prompt=stage1_system,
-        messages=stage1_messages,
-        max_tokens=max_tokens,
-        temperature=temperature,
-    )
+    pages = fetch_s3_pages(s3_uri)
 
-    stage1_output = stage1_response["content"][0]["text"]
+    # Process each page through stage 1
+    all_stage1_outputs = []
+    for i, page_text in enumerate(pages):
+        print(f"Processing page {i+1} of {len(pages)}...")
+        stage1_system, stage1_messages = build_messages(
+            page_text,
+            f"{user_request} (Page {i+1} of {len(pages)})",
+            few_shot_examples,
+            stage1_system_prompt,
+        )
+
+        stage1_response = invoke_bedrock(
+            model_id=model_id,
+            system_prompt=stage1_system,
+            messages=stage1_messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+
+        all_stage1_outputs.append(stage1_response["content"][0]["text"])
+        print(f"Completed page {i+1}")
+
+    # Combine all stage 1 outputs
+    stage1_output = "\n\n".join(all_stage1_outputs)
+    document_text = "\n\n".join(pages)
 
     stage2_request = (
         "Use the extracted entities to perform the stage 2 verification instructions.\n\n"
@@ -212,13 +230,13 @@ def lambda_handler(event, context):
     #     "Generate a summary based on the extraction and verification results.\n\n"
     #     f"Extracted entities:\n{stage1_output}\n\nVerification results:\n{stage2_output}"
     # )
-    # 
+    #
     # # Stage 3 doesn't need document_text, just the previous outputs
     # stage3_messages = []
     # for example in few_shot_examples:
     #     stage3_messages.append({"role": "user", "content": [{"type": "text", "text": example["user"]}]})
     #     stage3_messages.append({"role": "assistant", "content": [{"type": "text", "text": example["assistant"]}]})
-    # 
+    #
     # stage3_messages.append({"role": "user", "content": [{"type": "text", "text": stage3_request}]})
 
     # stage3_response = invoke_bedrock(
@@ -237,10 +255,10 @@ def lambda_handler(event, context):
             "answer": stage2_output,
             "stage1_answer": stage1_output,
             "stage2_answer": stage2_output,
-            "stage1_usage": stage1_response.get("usage", {}),
+            "stage1_usage": {"total_pages": len(pages)},
             "stage2_usage": stage2_response.get("usage", {}),
             # "stage3_usage": stage3_response.get("usage", {}),
-            "stage1_stop_reason": stage1_response.get("stop_reason"),
+            "stage1_stop_reason": "completed_all_pages",
             "stage2_stop_reason": stage2_response.get("stop_reason"),
             # "stage3_stop_reason": stage3_response.get("stop_reason"),
             "model_id": model_id,
