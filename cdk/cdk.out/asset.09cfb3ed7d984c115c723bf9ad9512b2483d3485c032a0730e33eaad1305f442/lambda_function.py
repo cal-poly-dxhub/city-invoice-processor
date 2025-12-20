@@ -3,7 +3,6 @@ import os
 from typing import Dict, List, Tuple
 from urllib.parse import urlparse
 from io import BytesIO
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import boto3
 import fitz  # PyMuPDF
@@ -189,9 +188,9 @@ def lambda_handler(event, context):
 
     pages = fetch_s3_pages(s3_uri)
 
-    # Process all pages in parallel through stage 1
-    def process_page(page_data):
-        i, page_text = page_data
+    # Process each page through stage 1
+    all_stage1_outputs = []
+    for i, page_text in enumerate(pages):
         print(f"Processing page {i+1} of {len(pages)}...")
         stage1_system, stage1_messages = build_messages(
             page_text,
@@ -199,23 +198,17 @@ def lambda_handler(event, context):
             few_shot_examples,
             stage1_system_prompt,
         )
-        response = invoke_bedrock(
+
+        stage1_response = invoke_bedrock(
             model_id=model_id,
             system_prompt=stage1_system,
             messages=stage1_messages,
             max_tokens=max_tokens,
             temperature=temperature,
         )
-        print(f"Completed page {i+1}")
-        return i, response["content"][0]["text"]
 
-    # Use ThreadPoolExecutor to process pages concurrently
-    all_stage1_outputs = [None] * len(pages)
-    with ThreadPoolExecutor(max_workers=min(len(pages), 10)) as executor:
-        futures = {executor.submit(process_page, (i, page)): i for i, page in enumerate(pages)}
-        for future in as_completed(futures):
-            i, output = future.result()
-            all_stage1_outputs[i] = output
+        all_stage1_outputs.append(stage1_response["content"][0]["text"])
+        print(f"Completed page {i+1}")
 
     # Combine all stage 1 outputs
     stage1_output = "\n\n".join(all_stage1_outputs)
