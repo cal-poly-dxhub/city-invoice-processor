@@ -20,7 +20,7 @@ bedrock_runtime = boto3.client(
 
 
 DEFAULT_MODEL_ID = os.environ.get(
-    "MODEL_ID", "anthropic.claude-3-5-sonnet-20241022-v2:0"
+    "MODEL_ID", "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
 )
 DEFAULT_STAGE1_SYSTEM_PROMPT = (
     "You are an entity resolver. Parse each page, dynamically inferring categories and ignoring "
