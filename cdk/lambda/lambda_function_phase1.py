@@ -33,22 +33,32 @@ DEFAULT_STAGE1_SYSTEM_PROMPT = (
     "documentation, or other) and include page_type in the JSON output for that page so downstream "
     "matching can detect missing context. Output must be a single JSON object with this shape: "
     "{page_number: <int>, page_type: <string>, entities: <array of objects>}. "
-    "IMPORTANT: Extract ALL entities from the page, including multiple occurrences of the same person "
-    "if they appear in separate paystubs or records. Do NOT skip or combine entities with the same name "
-    "unless they are truly duplicates within the same record. Each distinct paystub, timesheet, or "
-    "record should be a separate entity object even if the person's name appears multiple times. "
-    "Each entity object must include the fields you infer for that entity."
+    "\n\nCRITICAL: Pages often contain 4-6+ separate paystubs or records. You MUST extract EVERY SINGLE ONE.\n"
+    "- Read through the ENTIRE page text before responding\n"
+    "- Count how many distinct employee names appear - that's your minimum number of entities\n"
+    "- If you see 'Salazar, Tomas' twice with different dates, create TWO separate entity objects\n"
+    "- If you see 'Mutul, Rolando' three times with different pay periods, create THREE separate entity objects\n"
+    "- Do NOT stop after 2-3 entities - pages typically have 4-8 entities\n"
+    "- Each distinct paystub, timesheet, or record MUST be a separate entity object\n"
+    "- Do NOT combine or skip any entities\n"
+    "Each entity object must include all the fields you can infer for that specific paystub/record."
 )
 DEFAULT_STAGE2_SYSTEM_PROMPT = (
     "For each entity in this JSON object, match the data on the summary page(s) against the data "
     "in supporting documentation. Aggregate supporting data when needed to align with the summary. "
     "Use page_type annotations to determine whether missing data is from summaries/statements "
     "or from supporting documentation (e.g., paystubs). "
-    "When reporting pages, only use the page_number values provided in the extracted entity JSON; "
-    "do not infer or renumber pages from the full document text. "
-    "While assessing match quality, if dealing with timesheet hours, verify both the pay period dates and not just the "
+    "\n\nCRITICAL RULES FOR PAGE NUMBERS:\n"
+    "- summary_pages and supporting_pages arrays MUST ONLY contain page_number values that actually appear "
+    "in the stage 1 extracted JSON for that entity.\n"
+    "- Do NOT invent, infer, or hallucinate page numbers.\n"
+    "- Do NOT include a page number unless that exact entity name appears on that page in the input.\n"
+    "- Match entities by name variations (e.g., 'Lydia I Candila' and 'Lydia I. Candila' are the same person).\n"
+    "- If an entity appears on page 4 in stage 1, it MUST be in your output for page 4.\n"
+    "- If an entity does NOT appear on page 2 in stage 1, do NOT include page 2 in your output.\n"
+    "\nWhile assessing match quality, if dealing with timesheet hours, verify both the pay period dates and not just the "
     "final amounts. "
-    "Return structured JSON with two arrays: "
+    "\nReturn structured JSON with two arrays: "
     "1) matched_entities: each item should include entity name/identifier, summary_pages (list of ALL page numbers "
     "where this entity appears in summaries), supporting_pages (list of ALL page numbers where this entity appears "
     "in supporting docs), summary_objects (array of stage 1 entity objects from summary pages), and supporting_objects "
@@ -59,7 +69,7 @@ DEFAULT_STAGE2_SYSTEM_PROMPT = (
     "details about why it is missing. Always include all unmatched entities here, even if no "
     "matches were found in either direction. Explicitly include summary-only entities that lack "
     "supporting documentation and supporting-only entities that lack summaries. "
-    "CRITICAL: Ensure that matched_entities and orphaned_entities together cover ALL entities present across "
+    "\nEnsure that matched_entities and orphaned_entities together cover ALL entities present across "
     "ALL pages in the stage 1 extracted JSON. Do not drop, skip, or omit any entities. Process every single "
     "entity from every page. "
     "Do not write a narrative summary; only return the JSON object."
@@ -260,7 +270,8 @@ def _textract_fallback(page_number: int, image_bytes: bytes, model_id: str = Non
 def _normalize_stage1_output(page_number: int, output_text: str) -> Dict:
     candidate = _extract_json_candidate(output_text or "")
     if isinstance(candidate, dict):
-        candidate.setdefault("page_number", page_number)
+        # ALWAYS use PyMuPDF's page number, not LLM's potentially incorrect one
+        candidate["page_number"] = page_number
         candidate.setdefault("page_type", "unknown")
         candidate.setdefault("entities", [])
         if not isinstance(candidate["entities"], list):
@@ -459,15 +470,17 @@ def _find_text_coords_on_page(
             # If exact match failed, try searching for individual words
             # This handles cases where names are split across lines or text blocks
             words = search_text.strip().split()
-            if len(words) > 1:
+            # Filter out very short words (like "I", "II") that cause false positives
+            significant_words = [w for w in words if len(w) >= 3]
+            if len(significant_words) >= 2:
                 all_word_rects = []
-                for word in words:
+                for word in significant_words:
                     word_rects = page.search_for(word)
                     all_word_rects.extend(word_rects)
 
                 if all_word_rects:
                     # Group nearby rectangles (likely part of the same entity occurrence)
-                    grouped_rects = _group_nearby_rects(all_word_rects, len(words))
+                    grouped_rects = _group_nearby_rects(all_word_rects, len(significant_words))
                     if grouped_rects:
                         coords = []
                         for group in grouped_rects:

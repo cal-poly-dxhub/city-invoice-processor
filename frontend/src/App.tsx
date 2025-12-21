@@ -107,6 +107,21 @@ function App() {
     return highlightsByPage[pageNum] || [];
   };
 
+  // Get adjusted occurrence count for a group (taking user edits into account)
+  const getAdjustedOccurrenceCount = (group: Group): number => {
+    const edits = pageEdits[group.groupId];
+    if (!edits || edits.removedPages.length === 0) {
+      // No edits or no removals, return original count
+      return group.occurrences.length;
+    }
+
+    // Filter out occurrences on removed pages
+    const activeOccurrences = group.occurrences.filter(
+      (occ) => !edits.removedPages.includes(occ.pageNumber)
+    );
+    return activeOccurrences.length;
+  };
+
   // Get current page rotation (default to 0)
   const getCurrentRotation = (): number => {
     return pageRotations.get(currentPage) || 0;
@@ -387,7 +402,7 @@ function App() {
                         {group.kind === 'orphaned' && <span className="orphaned-badge">⚠</span>}
                       </span>
                       <span className="group-meta">
-                        {group.occurrences.length} occurrences
+                        {getAdjustedOccurrenceCount(group)} occurrences
                       </span>
                     </div>
                   </li>
