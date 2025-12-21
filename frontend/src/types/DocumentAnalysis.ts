@@ -8,6 +8,7 @@ export interface HighlightRect {
   y: number;
   width: number;
   height: number;
+  isOrphaned?: boolean; // True if this highlight is for an orphaned entity
 }
 
 export interface Occurrence {

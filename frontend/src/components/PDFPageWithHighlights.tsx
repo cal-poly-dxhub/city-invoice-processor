@@ -206,7 +206,7 @@ export function PDFPageWithHighlights({
           {highlights.map((highlight, index) => (
             <div
               key={index}
-              className="highlight-rect"
+              className={`highlight-rect ${highlight.isOrphaned ? 'orphaned' : ''}`}
               style={{
                 left: `${highlight.x * 100}%`,
                 top: `${highlight.y * 100}%`,

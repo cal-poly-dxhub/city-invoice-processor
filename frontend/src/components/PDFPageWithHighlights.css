@@ -67,3 +67,14 @@
   background-color: rgba(255, 255, 0, 0.5); /* Brighter on hover */
   border-color: rgba(255, 180, 0, 1);
 }
+
+/* Orphaned entity highlights - orange/amber color */
+.highlight-rect.orphaned {
+  background-color: rgba(255, 145, 0, 0.3); /* Translucent orange */
+  border: 2px solid rgba(255, 100, 0, 0.8); /* Darker orange border */
+}
+
+.highlight-rect.orphaned:hover {
+  background-color: rgba(255, 145, 0, 0.5); /* Brighter orange on hover */
+  border-color: rgba(255, 80, 0, 1);
+}

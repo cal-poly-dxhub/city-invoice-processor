@@ -718,6 +718,63 @@ def to_document_analysis(
 
         analysis["groups"].append(group)
 
+    # Process orphaned entities (entities without matches)
+    orphaned_entities_list = matched_entities_root.get("orphaned_entities", [])
+    if isinstance(orphaned_entities_list, list):
+        for orphan_idx, orphaned_entity in enumerate(orphaned_entities_list):
+            if not isinstance(orphaned_entity, dict):
+                continue
+
+            # Generate unique group ID for orphaned entities
+            group_id = f"orphan_{orphan_idx}"
+
+            # Extract orphaned entity metadata
+            label = orphaned_entity.get("name", f"Orphaned {orphan_idx}")
+            pages = orphaned_entity.get("pages", []) or []
+
+            occurrences = []
+
+            # Process coords attached to orphaned entity
+            entity_coords = orphaned_entity.get("coords", [])
+            if isinstance(entity_coords, list):
+                for coord_idx, coord in enumerate(entity_coords):
+                    if not isinstance(coord, dict):
+                        continue
+
+                    page_number = coord.get("page_number")
+                    role = coord.get("role", "orphaned")
+
+                    if not page_number:
+                        continue
+
+                    occurrence_id = f"{group_id}_p{page_number}_c{coord_idx}"
+                    coord_box = {k: v for k, v in coord.items() if k not in ["page_number", "role"]}
+
+                    occurrence = {
+                        "occurrenceId": occurrence_id,
+                        "groupId": group_id,
+                        "pageNumber": page_number,
+                        "role": role,
+                        "coords": [coord_box],
+                        "snippet": label,
+                    }
+                    occurrences.append(occurrence)
+
+            # Build orphaned group
+            orphaned_group = {
+                "groupId": group_id,
+                "label": label,
+                "kind": "orphaned",
+                "summaryPages": [],
+                "supportingPages": pages,
+                "occurrences": occurrences,
+                "meta": {
+                    "rawObjects": orphaned_entity.get("objects", [])
+                }
+            }
+
+            analysis["groups"].append(orphaned_group)
+
     return analysis
 
 
@@ -947,25 +1004,38 @@ def lambda_handler(event, context):
                 # Attach coords in-place, passing stage1 outputs for Textract geometry
                 attach_coords_to_matched_entities(pdf_bytes, matched_entities, all_stage1_outputs)
 
-                # Transform to DocumentAnalysis format
-                # Extract document_id from event if available, otherwise use placeholder
-                document_id = event.get("document_id", "anonymous-document")
-                page_count = len(pages)
+            # Also attach coordinates to orphaned entities
+            orphaned_entities = stage2_json.get("orphaned_entities", [])
+            if isinstance(orphaned_entities, list) and orphaned_entities:
+                print(f"Attaching coordinates to {len(orphaned_entities)} orphaned entities")
+                # Normalize orphaned entity structure to match matched_entities structure
+                # Orphaned entities have "pages" instead of "summary_pages"/"supporting_pages"
+                for orphan in orphaned_entities:
+                    pages = orphan.get("pages", [])
+                    # Treat all orphaned pages as supporting pages
+                    orphan["summary_pages"] = []
+                    orphan["supporting_pages"] = pages
+                    orphan["summary_objects"] = []
+                    orphan["supporting_objects"] = orphan.get("objects", [])
+                attach_coords_to_matched_entities(pdf_bytes, orphaned_entities, all_stage1_outputs)
 
-                print(f"Transforming to DocumentAnalysis format (documentId: {document_id}, pageCount: {page_count})")
-                document_analysis = to_document_analysis(
-                    document_id,
-                    page_count,
-                    stage2_json,
-                    stage1_outputs=all_stage1_outputs,
-                    pages_metadata=pages
-                )
-                document_analysis_json = json.dumps(document_analysis)
+            # Transform to DocumentAnalysis format
+            # Extract document_id from event if available, otherwise use placeholder
+            document_id = event.get("document_id", "anonymous-document")
+            page_count = len(pages)
 
-                # Keep the raw matched_entities for backwards compatibility (optional)
-                stage2_output_augmented = json.dumps(stage2_json)
-            else:
-                print("WARNING: No matched_entities found in stage2 output")
+            print(f"Transforming to DocumentAnalysis format (documentId: {document_id}, pageCount: {page_count})")
+            document_analysis = to_document_analysis(
+                document_id,
+                page_count,
+                stage2_json,
+                stage1_outputs=all_stage1_outputs,
+                pages_metadata=pages
+            )
+            document_analysis_json = json.dumps(document_analysis)
+
+            # Keep the raw matched_entities for backwards compatibility (optional)
+            stage2_output_augmented = json.dumps(stage2_json)
         else:
             print("WARNING: Could not parse stage2 output as JSON (possibly truncated), returning without coords")
     except Exception as e:
