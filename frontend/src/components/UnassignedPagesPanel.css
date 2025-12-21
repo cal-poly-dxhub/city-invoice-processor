@@ -1,0 +1,260 @@
+.unassigned-pages-panel {
+  background: white;
+  border-radius: 8px;
+  padding: 1.5rem;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  border-left: 4px solid #ed8936;
+}
+
+.unassigned-pages-panel h3 {
+  margin: 0 0 0.5rem 0;
+  color: #333;
+  font-size: 1.25rem;
+}
+
+.no-unassigned-message {
+  color: #48bb78;
+  font-weight: 500;
+  margin: 1rem 0;
+}
+
+.unassigned-summary {
+  background: rgba(237, 137, 54, 0.1);
+  padding: 0.75rem;
+  border-radius: 4px;
+  margin-bottom: 1rem;
+  font-size: 0.95rem;
+  color: #333;
+}
+
+.unassigned-summary strong {
+  color: #ed8936;
+  font-size: 1.1rem;
+}
+
+.selection-count {
+  color: #646cff;
+  font-weight: 600;
+}
+
+.selection-controls {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.select-all-button,
+.clear-selection-button {
+  background: #646cff;
+  color: white;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: background 0.2s;
+}
+
+.select-all-button:hover {
+  background: #535ac8;
+}
+
+.clear-selection-button {
+  background: #666;
+}
+
+.clear-selection-button:hover {
+  background: #555;
+}
+
+.unassigned-page-list {
+  max-height: 250px;
+  overflow-y: auto;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.unassigned-page-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem;
+  border-bottom: 1px solid #f0f0f0;
+  transition: background 0.2s;
+}
+
+.unassigned-page-item:last-child {
+  border-bottom: none;
+}
+
+.unassigned-page-item.selected {
+  background: rgba(100, 108, 255, 0.1);
+}
+
+.unassigned-page-item .page-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  user-select: none;
+  flex: 1;
+}
+
+.unassigned-page-item input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+}
+
+.jump-button {
+  background: #646cff;
+  color: white;
+  border: none;
+  padding: 0.25rem 0.75rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 1rem;
+  transition: background 0.2s;
+}
+
+.jump-button:hover {
+  background: #535ac8;
+}
+
+.assignment-actions {
+  border-top: 2px solid #f0f0f0;
+  padding-top: 1rem;
+  margin-top: 1rem;
+}
+
+.action-section {
+  margin-bottom: 1.5rem;
+}
+
+.action-section h4 {
+  margin: 0 0 0.75rem 0;
+  font-size: 1rem;
+  color: #555;
+}
+
+.assign-to-existing {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.group-selector {
+  flex: 1;
+  padding: 0.5rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 0.95rem;
+  background: white;
+  color: #333;
+}
+
+.group-selector option {
+  color: #333;
+  background: white;
+}
+
+.assign-button {
+  background: #646cff;
+  color: white;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: background 0.2s;
+  white-space: nowrap;
+}
+
+.assign-button:hover:not(:disabled) {
+  background: #535ac8;
+}
+
+.assign-button:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+}
+
+.create-new-group-button {
+  background: #48bb78;
+  color: white;
+  border: none;
+  padding: 0.75rem 1.5rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 500;
+  font-size: 0.95rem;
+  transition: background 0.2s;
+  width: 100%;
+}
+
+.create-new-group-button:hover {
+  background: #38a169;
+}
+
+.new-group-form {
+  background: rgba(72, 187, 120, 0.05);
+  padding: 1rem;
+  border-radius: 6px;
+  border: 2px solid #48bb78;
+}
+
+.new-group-form h4 {
+  margin: 0 0 0.75rem 0;
+  color: #48bb78;
+}
+
+.group-name-input {
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 0.95rem;
+  margin-bottom: 0.75rem;
+}
+
+.form-buttons {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.create-button {
+  flex: 1;
+  background: #48bb78;
+  color: white;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: background 0.2s;
+}
+
+.create-button:hover:not(:disabled) {
+  background: #38a169;
+}
+
+.create-button:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+}
+
+.cancel-button {
+  background: #666;
+  color: white;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.cancel-button:hover {
+  background: #555;
+}
