@@ -13,7 +13,7 @@ s3_client = boto3.client(
 )
 bedrock_runtime = boto3.client(
     "bedrock-runtime",
-    config=boto3.session.Config(retries={"max_attempts": 3}, read_timeout=300),
+    config=boto3.session.Config(retries={"max_attempts": 3}, read_timeout=600),
 )
 textract_client = boto3.client(
     "textract",
@@ -30,21 +30,32 @@ DEFAULT_STAGE1_SYSTEM_PROMPT = (
     "You are an entity extractor for financial documents. Extract entities (people, companies) "
     "that have associated financial data on this page. "
     "Output must be a single JSON object: {page_number: <int>, entities: <array of objects>}. "
+    "Each entity object MUST have a 'name' field containing the entity name. "
     "\n\nCRITICAL RULES:\n"
     "- ONLY extract entities that appear in the ACTUAL TEXT on this page\n"
-    "- DO NOT invent, guess, or use placeholder names (no 'John Smith', 'ABC Corp', 'ACME', etc.)\n"
+    "- DO NOT invent, guess, or use placeholder names like 'JOHN DOE', 'ABC COMPANY', etc.\n"
+    "- DO NOT create example or template data - every field must come from the actual document\n"
     "- Each entity must have associated data (amounts, dates, hours, etc.) - not just a name\n"
     "- If a name appears multiple times with different transactions, create separate entity objects\n"
     "- Ignore page headers, footers, column labels, and form field labels\n"
-    "- If you cannot find ANY entities with financial data on this page, return empty entities array\n"
-    "- Include all relevant fields: name, dates, amounts, hours, etc."
+    "- If you cannot find ANY entities with financial data on this page, return {page_number: N, entities: []}\n"
+    "- NEVER return entities with fabricated addresses, account numbers, or other made-up data\n"
+    "\n\nENTITY NAMING PRIORITY (VENDOR vs CUSTOMER):\n"
+    "- For invoices/bills: use the VENDOR/BILLER name (who is sending the bill), NOT the customer/account holder\n"
+    "- Look for vendor in: company logo, letterhead, 'From' field, 'Billed By', header area\n"
+    "- Do NOT use 'Account Name', 'Customer Name', or 'Account Holder' as the entity name\n"
+    "- For service receipts: use the service provider/vendor name, not the customer receiving the service\n"
+    "- When a person's name appears with a company name, prioritize the company name unless it's payroll\n"
+    "- For payroll/paystubs: use the employee name as the entity (employee is receiving payment)\n"
+    "- General rule: the entity is who is providing the service/goods, not who is paying for it\n"
+    "- Include all relevant fields: name, dates, amounts, service details, customer info as metadata"
 )
 DEFAULT_STAGE2_SYSTEM_PROMPT = (
     "You are an entity grouper. Your job is to group the same entities together across multiple pages. "
     "You will receive Stage 1 output with entities extracted from each page. "
     "\n\nCRITICAL RULES:\n"
     "- ONLY use entities that were extracted in Stage 1 - DO NOT create new entities\n"
-    "- DO NOT invent or hallucinate entity names, page numbers, or data\n"
+    "- DO NOT invent or hallucinate entity names or page numbers\n"
     "- Group entities that represent the same person/company across different pages\n"
     "- Match entities by name variations:\n"
     "  * Punctuation differences (e.g., middle initial with/without period)\n"
@@ -55,8 +66,53 @@ DEFAULT_STAGE2_SYSTEM_PROMPT = (
     "- If Stage 1 returned no entities, return an empty entities array.\n"
     "\n\nOutput must be JSON: "
     "{entities: [{name: <string>, pages: <array of page numbers>, objects: <array of entity objects from Stage 1>}]}. "
-    "Each group must include ALL pages where that entity appears and ALL the Stage 1 objects for those pages."
+    "Each group must include the canonical name, ALL page numbers where that entity appears, and ALL the Stage 1 entity objects."
 )
+
+
+def _reconstruct_entity_objects(stage2_groups: List[Dict], stage1_outputs: List[Dict]) -> List[Dict]:
+    """
+    Reconstruct full entity objects from Stage 1 data after Stage 2 grouping.
+    Stage 2 only returns {name, pages}, but we need to attach the full objects.
+    """
+    # Build a lookup: page_number -> list of entities on that page
+    page_to_entities = {}
+    for page in stage1_outputs:
+        if not isinstance(page, dict):
+            continue
+        page_num = page.get("page_number")
+        entities = page.get("entities", [])
+        if isinstance(entities, list):
+            page_to_entities[page_num] = entities
+
+    # Reconstruct each group with full objects
+    reconstructed = []
+    for group in stage2_groups:
+        if not isinstance(group, dict):
+            continue
+
+        group_name = group.get("name")
+        group_pages = group.get("pages", [])
+
+        # Collect all entity objects from the pages in this group
+        all_objects = []
+        for page_num in group_pages:
+            page_entities = page_to_entities.get(page_num, [])
+            for entity in page_entities:
+                if not isinstance(entity, dict):
+                    continue
+                # Include this entity's full data
+                entity_with_page = entity.copy()
+                entity_with_page["page_number"] = page_num
+                all_objects.append(entity_with_page)
+
+        reconstructed.append({
+            "name": group_name,
+            "pages": group_pages,
+            "objects": all_objects
+        })
+
+    return reconstructed
 
 
 def parse_s3_uri(uri: str) -> Tuple[str, str]:
@@ -122,7 +178,9 @@ def fetch_s3_pages(uri: str) -> Tuple[List[Dict[str, Optional[str]]], bytes, Lis
             })
 
             # Extract text with coordinates for later lookup (avoid reopening PDF)
-            text_coords_cache.append(page.get_text("dict"))
+            text_dict = page.get_text("dict")
+            text_dict["rotation"] = page.rotation  # Add rotation for coordinate normalization
+            text_coords_cache.append(text_dict)
 
         doc.close()
         return pages, content, text_coords_cache
@@ -131,17 +189,32 @@ def fetch_s3_pages(uri: str) -> Tuple[List[Dict[str, Optional[str]]], bytes, Lis
 
 
 def _extract_json_candidate(output_text: str) -> Optional[object]:
+    if not output_text:
+        return None
+
+    # Strip markdown code blocks if present
+    text = output_text.strip()
+    if text.startswith("```"):
+        # Find the end of the opening fence (```json or ```)
+        first_newline = text.find("\n")
+        if first_newline != -1:
+            text = text[first_newline + 1:]
+        # Remove closing fence if present
+        if text.endswith("```"):
+            text = text[:-3].rstrip()
+
+    # Find JSON object or array
     start = min(
-        [pos for pos in (output_text.find("{"), output_text.find("[")) if pos != -1],
+        [pos for pos in (text.find("{"), text.find("[")) if pos != -1],
         default=-1,
     )
     if start == -1:
         return None
-    end = max(output_text.rfind("}"), output_text.rfind("]"))
+    end = max(text.rfind("}"), text.rfind("]"))
     if end == -1 or end <= start:
         return None
     try:
-        return json.loads(output_text[start : end + 1])
+        return json.loads(text[start : end + 1])
     except json.JSONDecodeError:
         return None
 
@@ -301,9 +374,16 @@ def _normalize_stage1_output(page_number: int, output_text: str) -> Dict:
         if not isinstance(candidate["entities"], list):
             candidate["entities"] = []
         else:
-            candidate["entities"] = [
-                entity for entity in candidate["entities"] if isinstance(entity, dict)
-            ]
+            # Filter to dict entities and normalize field names
+            normalized_entities = []
+            for entity in candidate["entities"]:
+                if isinstance(entity, dict):
+                    # Normalize entity name field: use 'name' if present, otherwise try 'entity_name'
+                    if "name" not in entity or entity.get("name") == "N/A":
+                        if "entity_name" in entity and entity["entity_name"] != "N/A":
+                            entity["name"] = entity["entity_name"]
+                    normalized_entities.append(entity)
+            candidate["entities"] = normalized_entities
         if "raw_output" in candidate:
             candidate["raw_output"] = candidate["raw_output"][:2000]
         return candidate
@@ -316,22 +396,22 @@ def _normalize_stage1_output(page_number: int, output_text: str) -> Dict:
 
 
 def _prepare_stage2_payload(stage1_outputs: List[Dict]) -> List[Dict]:
+    """
+    Prepare Stage 2 payload from Stage 1 outputs.
+    Passes through all entity data - no stripping (more reliable, accepts slower performance).
+    """
     sanitized = []
     for page in stage1_outputs:
         if not isinstance(page, dict):
             continue
         page_number = page.get("page_number")
-        page_type = page.get("page_type", "unknown")
         entities = page.get("entities") if isinstance(page.get("entities"), list) else []
         entities = [entity for entity in entities if isinstance(entity, dict)]
-        payload = {
+
+        sanitized.append({
             "page_number": page_number,
-            "page_type": page_type,
             "entities": entities,
-        }
-        if page.get("textract_fallback") is True:
-            payload["textract_fallback"] = True
-        sanitized.append(payload)
+        })
     return sanitized
 
 
@@ -381,6 +461,9 @@ def invoke_bedrock(
     max_tokens: int = 1000,
     temperature: float = 0.0,
 ) -> Dict:
+    import time
+    from botocore.exceptions import ClientError
+
     body = json.dumps(
         {
             "anthropic_version": "bedrock-2023-05-31",
@@ -391,14 +474,33 @@ def invoke_bedrock(
         }
     )
 
-    response = bedrock_runtime.invoke_model(
-        modelId=model_id,
-        contentType="application/json",
-        accept="application/json",
-        body=body,
-    )
+    # Retry with exponential backoff for rate limiting
+    max_retries = 5
+    base_delay = 2  # seconds
 
-    return json.loads(response["body"].read())
+    for attempt in range(max_retries):
+        try:
+            response = bedrock_runtime.invoke_model(
+                modelId=model_id,
+                contentType="application/json",
+                accept="application/json",
+                body=body,
+            )
+            return json.loads(response["body"].read())
+
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "")
+
+            if error_code == "ThrottlingException" and attempt < max_retries - 1:
+                # Calculate exponential backoff delay
+                delay = base_delay * (2 ** attempt)
+                print(f"Rate limited. Retrying in {delay} seconds... (attempt {attempt + 1}/{max_retries})")
+                time.sleep(delay)
+            else:
+                # Re-raise if not throttling or out of retries
+                raise
+
+    raise Exception(f"Failed after {max_retries} retries")
 
 
 def _compute_normalized_coords(rect, page_rect) -> Dict[str, float]:
@@ -892,8 +994,19 @@ def _search_cached_text(text_dict: Dict, search_text: str) -> List[Dict[str, flo
     search_lower = search_text.lower().strip()
     coords = []
 
-    page_width = text_dict.get("width", 1)
-    page_height = text_dict.get("height", 1)
+    # Get page dimensions and handle rotation
+    base_width = text_dict.get("width", 1)
+    base_height = text_dict.get("height", 1)
+    rotation = text_dict.get("rotation", 0)
+
+    # For 90° or 270° rotation, dimensions are swapped in coordinate space
+    # (Same logic as the old code had with page.search_for())
+    if rotation in (90, 270):
+        page_width = base_height
+        page_height = base_width
+    else:
+        page_width = base_width
+        page_height = base_height
 
     # Iterate through blocks, lines, and spans to find matching text
     for block in text_dict.get("blocks", []):
@@ -909,33 +1022,39 @@ def _search_cached_text(text_dict: Dict, search_text: str) -> List[Dict[str, flo
                 bbox = line.get("bbox")
                 if bbox and len(bbox) == 4:
                     x0, y0, x1, y1 = bbox
-                    coords.append({
+                    normalized = {
                         "x": x0 / page_width,
                         "y": y0 / page_height,
                         "width": (x1 - x0) / page_width,
                         "height": (y1 - y0) / page_height
-                    })
+                    }
+                    # Debug logging
+                    if len(coords) == 0:  # Only log first match per search
+                        print(f"  Match '{line_text[:30]}...' at bbox={bbox}")
+                        print(f"  Page dims: w={page_width:.1f}, h={page_height:.1f}, rotation={rotation}")
+                        print(f"  Normalized: {normalized}")
+                    coords.append(normalized)
 
     return coords
 
 
 def attach_coords_to_matched_entities(
-    matched_entities: List[Dict], text_coords_cache: List[Dict], stage1_outputs: List[Dict] = None
+    matched_entities: List[Dict], pdf_bytes: bytes, stage1_outputs: List[Dict] = None
 ) -> None:
     """
     Augment matched_entities structure with coordinate information for entity names.
     Modifies the matched_entities list in-place by adding 'coords' fields.
-    Uses cached text+coords data from Stage 1 (no PDF reopening needed!).
+    Reopens PDF to search for text coordinates using PyMuPDF's search_for().
 
     Only entities with a "name" field will have coordinates attached. Other entities
     (like payment objects, dates, amounts) will not have coordinates.
 
     Args:
         matched_entities: List of matched entity dicts from stage 2
-        text_coords_cache: List of PyMuPDF text dicts with coordinates (from Stage 1)
+        pdf_bytes: Raw PDF file bytes
         stage1_outputs: Optional list of stage1 outputs containing textract_geometry
     """
-    if not matched_entities or not text_coords_cache:
+    if not matched_entities or not pdf_bytes:
         return
 
     try:
@@ -981,24 +1100,32 @@ def attach_coords_to_matched_entities(
                                 name_variations.append(obj_name)
 
             # Attach coordinates to entity name on each page
+            # NOTE: We tried caching text+coords but get_text("dict") returns unrotated coordinates
+            # while search_for() returns rotated coordinates. Reopening PDF is more reliable.
             entity_group["coords"] = []
             print(f"Searching for entity '{entity_name}' with {len(name_variations)} name variations")
-            for page_num in entity_pages:
-                # Get cached text for this page (page_num is 1-based, cache is 0-based)
-                page_index = page_num - 1
-                if page_index < 0 or page_index >= len(text_coords_cache):
-                    continue
 
-                text_dict = text_coords_cache[page_index]
+            # We need to reopen the PDF for accurate coordinate search
+            # The cached approach had coordinate system mismatches
+            try:
+                import fitz
+                doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+                if doc.needs_pass:
+                    doc.authenticate("")
 
-                # Try all name variations until we find a match
-                for name_var in name_variations:
-                    coords = _search_cached_text(text_dict, name_var)
-                    if coords:
-                        for coord in coords:
-                            coord["page_number"] = page_num
-                        entity_group["coords"].extend(coords)
-                        break  # Found match, no need to try other variations
+                for page_num in entity_pages:
+                    # Try all name variations until we find a match
+                    for name_var in name_variations:
+                        coords = _find_text_coords_on_page(doc, page_num, name_var, stage1_outputs)
+                        if coords:
+                            for coord in coords:
+                                coord["page_number"] = page_num
+                            entity_group["coords"].extend(coords)
+                            break  # Found match, no need to try other variations
+
+                doc.close()
+            except Exception as e:
+                print(f"Error searching for coordinates: {e}")
 
         print(f"Successfully attached coordinates to {len(matched_entities)} entity groups")
 
@@ -1041,7 +1168,9 @@ def lambda_handler(event, context):
                 "image_bytes": image_bytes,
             })
             # Extract text with coordinates for later lookup
-            text_coords_cache.append(page.get_text("dict"))
+            text_dict = page.get_text("dict")
+            text_dict["rotation"] = page.rotation  # Add rotation for coordinate normalization
+            text_coords_cache.append(text_dict)
         doc.close()
     elif s3_uri:
         pages, pdf_bytes, text_coords_cache = fetch_s3_pages(s3_uri)
@@ -1064,6 +1193,33 @@ def lambda_handler(event, context):
         i, page = page_data
         print(f"Processing page {i+1} of {len(pages)}...")
         page_text = page["text"]
+
+        # If page text is empty or whitespace, skip LLM and use Textract directly
+        # This prevents hallucinations when given empty input
+        if not page_text or not page_text.strip():
+            if page.get("image_bytes"):
+                print(f"Page {i+1} has no extractable text, using Textract")
+                try:
+                    output_text = _textract_fallback(
+                        i + 1,
+                        page["image_bytes"],
+                        model_id=model_id,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        system_prompt=stage1_system_prompt,
+                        user_request=user_request,
+                        few_shot_examples=few_shot_examples
+                    )
+                    print(f"Completed page {i+1} (Textract)")
+                    return i, _normalize_stage1_output(i + 1, output_text)
+                except Exception as textract_error:
+                    print(f"Textract failed for page {i+1}: {textract_error}")
+                    # Return empty entities for this page
+                    return i, {"page_number": i + 1, "page_type": "unknown", "entities": []}
+            else:
+                print(f"Page {i+1} has no text and no image bytes, skipping")
+                return i, {"page_number": i + 1, "page_type": "unknown", "entities": []}
+
         stage1_system, stage1_messages = build_messages(
             page_text,
             f"{user_request} (Page {i+1} of {len(pages)})",
@@ -1101,7 +1257,10 @@ def lambda_handler(event, context):
         return i, _normalize_stage1_output(i + 1, output_text)
 
     all_stage1_outputs = [None] * len(pages)
-    with ThreadPoolExecutor(max_workers=min(len(pages), 10)) as executor:
+    # Concurrency set to 3 for local testing to avoid rate limits
+    # When deploying to AWS Lambda, you can increase this (e.g., 10) for better performance
+    # AWS Lambda has higher concurrency limits and better rate limit handling
+    with ThreadPoolExecutor(max_workers=min(len(pages), 3)) as executor:
         futures = {
             executor.submit(process_page, (i, page)): i for i, page in enumerate(pages)
         }
@@ -1128,7 +1287,8 @@ def lambda_handler(event, context):
     )
 
     # Stage 2 needs more tokens to return all matched entities across all pages
-    stage2_max_tokens = max(max_tokens * 3, 32000)  # At least 3x Stage 1 tokens
+    # For large PDFs (100+ pages), this can require substantial output
+    stage2_max_tokens = max(max_tokens * 5, 64000)  # At least 5x Stage 1 tokens, up to 64k
 
     stage2_response = invoke_bedrock(
         model_id=model_id,
@@ -1153,8 +1313,8 @@ def lambda_handler(event, context):
 
             if isinstance(entities, list) and entities:
                 print(f"Attaching coordinates to {len(entities)} entity groups")
-                # Attach coords using cached text (no PDF reopening needed!)
-                attach_coords_to_matched_entities(entities, text_coords_cache, all_stage1_outputs)
+                # Attach coords by reopening PDF (most reliable for rotated pages)
+                attach_coords_to_matched_entities(entities, pdf_bytes, all_stage1_outputs)
 
             # Transform to DocumentAnalysis format
             # Extract document_id from event if available, otherwise use placeholder
