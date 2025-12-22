@@ -392,14 +392,13 @@ function App() {
                 {allGroups.map((group) => (
                   <li
                     key={group.groupId}
-                    className={`group-item ${group.groupId === currentGroupId ? 'active' : ''} ${group.kind === 'user-created' ? 'user-created' : ''} ${group.kind === 'orphaned' ? 'orphaned' : ''}`}
+                    className={`group-item ${group.groupId === currentGroupId ? 'active' : ''} ${group.kind === 'user-created' ? 'user-created' : ''}`}
                     onClick={() => setCurrentGroupId(group.groupId)}
                   >
                     <div className="group-item-content">
                       <span className="group-label">
                         {group.label}
                         {group.kind === 'user-created' && <span className="user-badge">★</span>}
-                        {group.kind === 'orphaned' && <span className="orphaned-badge">⚠</span>}
                       </span>
                       <span className="group-meta">
                         {getAdjustedOccurrenceCount(group)} occurrences

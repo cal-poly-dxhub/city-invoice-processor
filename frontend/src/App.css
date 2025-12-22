@@ -287,19 +287,6 @@
   border-left: 4px solid #48bb78;
 }
 
-.group-item.orphaned {
-  border-left: 4px solid #f56565;
-}
-
-.group-item.orphaned .group-label {
-  color: #c92a2a;
-  font-weight: 600;
-}
-
-.group-item.active.orphaned .group-label {
-  color: white;
-}
-
 .user-badge {
   margin-left: 0.5rem;
   color: #48bb78;
@@ -307,16 +294,6 @@
 }
 
 .group-item.active .user-badge {
-  color: #fff;
-}
-
-.orphaned-badge {
-  margin-left: 0.5rem;
-  color: #f56565;
-  font-size: 1.1rem;
-}
-
-.group-item.active .orphaned-badge {
   color: #fff;
 }
 

@@ -31,6 +31,16 @@ export type PageEditsState = {
 export function getOriginalPagesForGroup(group: Group): number[] {
   const pageSet = new Set<number>();
 
+  // Include all pages from summaryPages and supportingPages
+  // These are the pages Stage 2 assigned to this group
+  for (const page of group.summaryPages) {
+    pageSet.add(page);
+  }
+  for (const page of group.supportingPages) {
+    pageSet.add(page);
+  }
+
+  // Also include pages from occurrences (for redundancy/backwards compatibility)
   for (const occurrence of group.occurrences) {
     pageSet.add(occurrence.pageNumber);
   }
@@ -105,19 +115,13 @@ export function getHighlightsByPage(
   }
 
   // Populate highlights from occurrences
-  const isOrphaned = group.kind === 'orphaned';
-
   for (const occurrence of group.occurrences) {
     const page = occurrence.pageNumber;
 
     // Only include highlights for pages in effectivePages
     if (effectivePages.includes(page)) {
-      // Add all coordinate rectangles for this occurrence, marking orphaned status
-      const coordsWithOrphanedFlag = occurrence.coords.map(coord => ({
-        ...coord,
-        isOrphaned
-      }));
-      highlightsByPage[page].push(...coordsWithOrphanedFlag);
+      // Add all coordinate rectangles for this occurrence
+      highlightsByPage[page].push(...occurrence.coords);
     }
   }
 
@@ -129,10 +133,14 @@ export function getHighlightsByPage(
  *
  * @param group - The group to check
  * @param pageNumber - The page number to check
- * @returns True if the page has occurrences in the original group data
+ * @returns True if the page is in summaryPages, supportingPages, or has occurrences
  */
 export function isOriginalPage(group: Group, pageNumber: number): boolean {
-  return group.occurrences.some(occ => occ.pageNumber === pageNumber);
+  return (
+    group.summaryPages.includes(pageNumber) ||
+    group.supportingPages.includes(pageNumber) ||
+    group.occurrences.some(occ => occ.pageNumber === pageNumber)
+  );
 }
 
 /**

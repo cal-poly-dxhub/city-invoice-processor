@@ -27,52 +27,35 @@ DEFAULT_MODEL_ID = os.environ.get(
     "MODEL_ID", "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
 )
 DEFAULT_STAGE1_SYSTEM_PROMPT = (
-    "You are an entity resolver. Parse each page, dynamically inferring categories and ignoring "
-    "header information. Differentiate between summaries and supporting documentation. For each "
-    "page, identify its page_type (for example: summary/statement, paystub, supporting "
-    "documentation, or other) and include page_type in the JSON output for that page so downstream "
-    "matching can detect missing context. Output must be a single JSON object with this shape: "
-    "{page_number: <int>, page_type: <string>, entities: <array of objects>}. "
-    "\n\nCRITICAL: Pages often contain 4-6+ separate paystubs or records. You MUST extract EVERY SINGLE ONE.\n"
-    "- Read through the ENTIRE page text before responding\n"
-    "- Count how many distinct employee names appear - that's your minimum number of entities\n"
-    "- If you see 'Salazar, Tomas' twice with different dates, create TWO separate entity objects\n"
-    "- If you see 'Mutul, Rolando' three times with different pay periods, create THREE separate entity objects\n"
-    "- Do NOT stop after 2-3 entities - pages typically have 4-8 entities\n"
-    "- Each distinct paystub, timesheet, or record MUST be a separate entity object\n"
-    "- Do NOT combine or skip any entities\n"
-    "Each entity object must include all the fields you can infer for that specific paystub/record."
+    "You are an entity extractor for financial documents. Extract entities (people, companies) "
+    "that have associated financial data on this page. "
+    "Output must be a single JSON object: {page_number: <int>, entities: <array of objects>}. "
+    "\n\nCRITICAL RULES:\n"
+    "- ONLY extract entities that appear in the ACTUAL TEXT on this page\n"
+    "- DO NOT invent, guess, or use placeholder names (no 'John Smith', 'ABC Corp', 'ACME', etc.)\n"
+    "- Each entity must have associated data (amounts, dates, hours, etc.) - not just a name\n"
+    "- If a name appears multiple times with different transactions, create separate entity objects\n"
+    "- Ignore page headers, footers, column labels, and form field labels\n"
+    "- If you cannot find ANY entities with financial data on this page, return empty entities array\n"
+    "- Include all relevant fields: name, dates, amounts, hours, etc."
 )
 DEFAULT_STAGE2_SYSTEM_PROMPT = (
-    "For each entity in this JSON object, match the data on the summary page(s) against the data "
-    "in supporting documentation. Aggregate supporting data when needed to align with the summary. "
-    "Use page_type annotations to determine whether missing data is from summaries/statements "
-    "or from supporting documentation (e.g., paystubs). "
-    "\n\nCRITICAL RULES FOR PAGE NUMBERS:\n"
-    "- summary_pages and supporting_pages arrays MUST ONLY contain page_number values that actually appear "
-    "in the stage 1 extracted JSON for that entity.\n"
-    "- Do NOT invent, infer, or hallucinate page numbers.\n"
-    "- Do NOT include a page number unless that exact entity name appears on that page in the input.\n"
-    "- Match entities by name variations (e.g., 'Lydia I Candila' and 'Lydia I. Candila' are the same person).\n"
-    "- If an entity appears on page 4 in stage 1, it MUST be in your output for page 4.\n"
-    "- If an entity does NOT appear on page 2 in stage 1, do NOT include page 2 in your output.\n"
-    "\nWhile assessing match quality, if dealing with timesheet hours, verify both the pay period dates and not just the "
-    "final amounts. "
-    "\nReturn structured JSON with two arrays: "
-    "1) matched_entities: each item should include entity name/identifier, summary_pages (list of ALL page numbers "
-    "where this entity appears in summaries), supporting_pages (list of ALL page numbers where this entity appears "
-    "in supporting docs), summary_objects (array of stage 1 entity objects from summary pages), and supporting_objects "
-    "(array of stage 1 entity objects from supporting pages). Include ALL pages and ALL objects for each matched entity. "
-    "2) orphaned_entities: entities that lack a corresponding match (either summary without "
-    "supporting proof or supporting data with no summary). Include the pages where each orphaned "
-    "entity appears and the extracted JSON objects for those pages. Do not include narrative "
-    "details about why it is missing. Always include all unmatched entities here, even if no "
-    "matches were found in either direction. Explicitly include summary-only entities that lack "
-    "supporting documentation and supporting-only entities that lack summaries. "
-    "\nEnsure that matched_entities and orphaned_entities together cover ALL entities present across "
-    "ALL pages in the stage 1 extracted JSON. Do not drop, skip, or omit any entities. Process every single "
-    "entity from every page. "
-    "Do not write a narrative summary; only return the JSON object."
+    "You are an entity grouper. Your job is to group the same entities together across multiple pages. "
+    "You will receive Stage 1 output with entities extracted from each page. "
+    "\n\nCRITICAL RULES:\n"
+    "- ONLY use entities that were extracted in Stage 1 - DO NOT create new entities\n"
+    "- DO NOT invent or hallucinate entity names, page numbers, or data\n"
+    "- Group entities that represent the same person/company across different pages\n"
+    "- Match entities by name variations:\n"
+    "  * Punctuation differences (e.g., middle initial with/without period)\n"
+    "  * Name order differences (first-last vs last-first vs last, first)\n"
+    "  * Treat all orderings of the same name components as the same entity\n"
+    "- Each page belongs to exactly ONE entity. Do NOT assign the same page number to multiple entities.\n"
+    "- Every entity from Stage 1 must appear in exactly one group in your output.\n"
+    "- If Stage 1 returned no entities, return an empty entities array.\n"
+    "\n\nOutput must be JSON: "
+    "{entities: [{name: <string>, pages: <array of page numbers>, objects: <array of entity objects from Stage 1>}]}. "
+    "Each group must include ALL pages where that entity appears and ALL the Stage 1 objects for those pages."
 )
 
 
@@ -92,10 +75,13 @@ def parse_s3_uri(uri: str) -> Tuple[str, str]:
     raise ValueError(f"Unsupported S3 URI: {uri}")
 
 
-def fetch_s3_pages(uri: str) -> Tuple[List[Dict[str, Optional[str]]], bytes]:
+def fetch_s3_pages(uri: str) -> Tuple[List[Dict[str, Optional[str]]], bytes, List[Dict]]:
     """
     Fetches document from S3 and extracts pages.
-    Returns: (pages, raw_pdf_bytes)
+    Returns: (pages, raw_pdf_bytes, text_coords_cache)
+    - pages: List of dicts with 'text' and 'image_bytes' for LLM processing
+    - raw_pdf_bytes: Original PDF bytes
+    - text_coords_cache: List of PyMuPDF text+coords dicts for coordinate lookup (avoids reopening PDF)
     """
     bucket, key = parse_s3_uri(uri)
     print(f"Downloading from S3: {bucket}/{key}")
@@ -122,20 +108,26 @@ def fetch_s3_pages(uri: str) -> Tuple[List[Dict[str, Optional[str]]], bytes]:
             doc.authenticate("")
 
         pages = []
+        text_coords_cache = []
+
         for page_num in range(doc.page_count):
             page = doc[page_num]
             pixmap = page.get_pixmap(dpi=200)
             image_bytes = pixmap.tobytes("png")
 
+            # Extract plain text for LLM
             pages.append({
                 "text": page.get_text(),
                 "image_bytes": image_bytes,
             })
 
-        doc.close()
-        return pages, content
+            # Extract text with coordinates for later lookup (avoid reopening PDF)
+            text_coords_cache.append(page.get_text("dict"))
 
-    return [{"text": content.decode("utf-8"), "image_bytes": None}], content
+        doc.close()
+        return pages, content, text_coords_cache
+
+    return [{"text": content.decode("utf-8"), "image_bytes": None}], content, []
 
 
 def _extract_json_candidate(output_text: str) -> Optional[object]:
@@ -811,34 +803,37 @@ def to_document_analysis(
         "groups": []
     }
 
-    matched_entities_list = matched_entities_root.get("matched_entities", [])
-    if not isinstance(matched_entities_list, list):
+    entities_list = matched_entities_root.get("entities", [])
+    if not isinstance(entities_list, list):
         return analysis
 
-    for group_idx, matched_entity in enumerate(matched_entities_list):
-        if not isinstance(matched_entity, dict):
+    for group_idx, entity in enumerate(entities_list):
+        if not isinstance(entity, dict):
             continue
 
         # Generate unique group ID
         group_id = f"g_{group_idx}"
 
         # Extract group metadata
-        # Check both "entity_name" (for vendors/companies) and "name" (for people/employees)
-        label = matched_entity.get("entity_name") or matched_entity.get("name", f"Group {group_idx}")
-        summary_pages = matched_entity.get("summary_pages", []) or []
-        supporting_pages = matched_entity.get("supporting_pages", []) or []
+        label = entity.get("name", f"Group {group_idx}")
+        entity_pages = entity.get("pages", []) or []
+
+        # For backward compatibility with frontend, we'll put all pages in supportingPages
+        # Frontend currently expects summaryPages and supportingPages
+        summary_pages = []
+        supporting_pages = entity_pages
 
         occurrences = []
 
-        # Process coords attached directly to matched_entity
-        entity_coords = matched_entity.get("coords", [])
+        # Process coords attached directly to entity
+        entity_coords = entity.get("coords", [])
         if isinstance(entity_coords, list):
             for coord_idx, coord in enumerate(entity_coords):
                 if not isinstance(coord, dict):
                     continue
 
                 page_number = coord.get("page_number")
-                role = coord.get("role", "summary")
+                role = coord.get("role", "supporting")
 
                 if not page_number:
                     continue
@@ -871,102 +866,84 @@ def to_document_analysis(
             "supportingPages": supporting_pages,
             "occurrences": occurrences,
             "meta": {
-                "rawSummaryObjects": matched_entity.get("summary_objects"),
-                "rawSupportingObjects": matched_entity.get("supporting_objects")
+                "rawObjects": entity.get("objects", [])
             }
         }
 
         analysis["groups"].append(group)
 
-    # Process orphaned entities as regular groups (no special treatment)
-    orphaned_entities_list = matched_entities_root.get("orphaned_entities", [])
-    if isinstance(orphaned_entities_list, list):
-        for orphan_idx, orphaned_entity in enumerate(orphaned_entities_list):
-            if not isinstance(orphaned_entity, dict):
-                continue
-
-            group_id = f"orphan_{orphan_idx}"
-            label = orphaned_entity.get("entity_name") or orphaned_entity.get("name", f"Entity {len(analysis['groups']) + 1}")
-            summary_pages = orphaned_entity.get("summary_pages", []) or []
-            supporting_pages = orphaned_entity.get("supporting_pages", []) or []
-
-            occurrences = []
-            entity_coords = orphaned_entity.get("coords", [])
-            if isinstance(entity_coords, list):
-                for coord_idx, coord in enumerate(entity_coords):
-                    if not isinstance(coord, dict):
-                        continue
-
-                    page_number = coord.get("page_number")
-                    role = coord.get("role", "supporting")
-
-                    if not page_number:
-                        continue
-
-                    occurrence_id = f"{group_id}_p{page_number}_c{coord_idx}"
-                    coord_box = {k: v for k, v in coord.items() if k not in ["page_number", "role"]}
-
-                    occurrence = {
-                        "occurrenceId": occurrence_id,
-                        "groupId": group_id,
-                        "pageNumber": page_number,
-                        "role": role,
-                        "coords": [coord_box],
-                        "snippet": label,
-                    }
-                    occurrences.append(occurrence)
-
-            # Build group (no special "kind" field - treat as regular entity)
-            orphaned_group = {
-                "groupId": group_id,
-                "label": label,
-                "kind": None,  # No special treatment
-                "summaryPages": summary_pages,
-                "supportingPages": supporting_pages,
-                "occurrences": occurrences,
-                "meta": {
-                    "rawSummaryObjects": orphaned_entity.get("summary_objects", []),
-                    "rawSupportingObjects": orphaned_entity.get("supporting_objects", [])
-                }
-            }
-
-            analysis["groups"].append(orphaned_group)
-
     return analysis
 
 
+def _search_cached_text(text_dict: Dict, search_text: str) -> List[Dict[str, float]]:
+    """
+    Search for text in cached PyMuPDF text dict and return normalized coordinates.
+
+    Args:
+        text_dict: PyMuPDF page.get_text("dict") output
+        search_text: Text to search for
+
+    Returns:
+        List of coordinate dicts with x, y, width, height (normalized 0-1)
+    """
+    if not search_text or not text_dict:
+        return []
+
+    search_lower = search_text.lower().strip()
+    coords = []
+
+    page_width = text_dict.get("width", 1)
+    page_height = text_dict.get("height", 1)
+
+    # Iterate through blocks, lines, and spans to find matching text
+    for block in text_dict.get("blocks", []):
+        if block.get("type") != 0:  # Skip non-text blocks (images, etc.)
+            continue
+
+        for line in block.get("lines", []):
+            # Reconstruct line text from spans
+            line_text = "".join(span.get("text", "") for span in line.get("spans", []))
+
+            if search_lower in line_text.lower():
+                # Found match - use the line's bounding box
+                bbox = line.get("bbox")
+                if bbox and len(bbox) == 4:
+                    x0, y0, x1, y1 = bbox
+                    coords.append({
+                        "x": x0 / page_width,
+                        "y": y0 / page_height,
+                        "width": (x1 - x0) / page_width,
+                        "height": (y1 - y0) / page_height
+                    })
+
+    return coords
+
+
 def attach_coords_to_matched_entities(
-    pdf_bytes: bytes, matched_entities: List[Dict], stage1_outputs: List[Dict] = None
+    matched_entities: List[Dict], text_coords_cache: List[Dict], stage1_outputs: List[Dict] = None
 ) -> None:
     """
     Augment matched_entities structure with coordinate information for entity names.
     Modifies the matched_entities list in-place by adding 'coords' fields.
-    Uses PyMuPDF for searchable text and Textract geometry for scanned pages.
+    Uses cached text+coords data from Stage 1 (no PDF reopening needed!).
 
     Only entities with a "name" field will have coordinates attached. Other entities
     (like payment objects, dates, amounts) will not have coordinates.
 
     Args:
-        pdf_bytes: Raw PDF file bytes
         matched_entities: List of matched entity dicts from stage 2
+        text_coords_cache: List of PyMuPDF text dicts with coordinates (from Stage 1)
         stage1_outputs: Optional list of stage1 outputs containing textract_geometry
     """
-    if not pdf_bytes or not matched_entities:
+    if not matched_entities or not text_coords_cache:
         return
 
     try:
-        # Open PDF once for all coordinate searches
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
 
-        if doc.needs_pass:
-            doc.authenticate("")
-
-        # Process each matched entity group
+        # Process each entity group
         for entity_group in matched_entities:
-            # Check both "entity_name" (for vendors/companies) and "name" (for people/employees)
-            entity_name = entity_group.get("entity_name") or entity_group.get("name", "Unknown")
-            summary_pages = entity_group.get("summary_pages", [])
-            supporting_pages = entity_group.get("supporting_pages", [])
+            entity_name = entity_group.get("name", "Unknown")
+            entity_pages = entity_group.get("pages", [])
 
             # Generate name variations for better matching
             name_variations = [entity_name]
@@ -977,11 +954,8 @@ def attach_coords_to_matched_entities(
                 if len(parts) == 2:
                     name_variations.append(f"{parts[1]} {parts[0]}")
 
-            # Extract names from summary_objects and supporting_objects for additional variations
-            all_objects = (
-                entity_group.get("summary_objects", []) +
-                entity_group.get("supporting_objects", [])
-            )
+            # Extract names from objects for additional variations
+            all_objects = entity_group.get("objects", [])
             if isinstance(all_objects, list):
                 for obj in all_objects:
                     if isinstance(obj, dict):
@@ -1006,33 +980,26 @@ def attach_coords_to_matched_entities(
                             if obj_name not in name_variations:
                                 name_variations.append(obj_name)
 
-            # Attach coordinates to entity name on each summary page
+            # Attach coordinates to entity name on each page
             entity_group["coords"] = []
-            print(f"Searching for entity '{entity_name}' with {len(name_variations)} name variations: {name_variations[:5]}")
-            for page_num in summary_pages:
+            print(f"Searching for entity '{entity_name}' with {len(name_variations)} name variations")
+            for page_num in entity_pages:
+                # Get cached text for this page (page_num is 1-based, cache is 0-based)
+                page_index = page_num - 1
+                if page_index < 0 or page_index >= len(text_coords_cache):
+                    continue
+
+                text_dict = text_coords_cache[page_index]
+
                 # Try all name variations until we find a match
                 for name_var in name_variations:
-                    coords = _find_text_coords_on_page(doc, page_num, name_var, stage1_outputs)
+                    coords = _search_cached_text(text_dict, name_var)
                     if coords:
                         for coord in coords:
                             coord["page_number"] = page_num
-                            coord["role"] = "summary"
                         entity_group["coords"].extend(coords)
                         break  # Found match, no need to try other variations
 
-            # Attach coordinates to entity name on each supporting page
-            for page_num in supporting_pages:
-                # Try all name variations until we find a match
-                for name_var in name_variations:
-                    coords = _find_text_coords_on_page(doc, page_num, name_var, stage1_outputs)
-                    if coords:
-                        for coord in coords:
-                            coord["page_number"] = page_num
-                            coord["role"] = "supporting"
-                        entity_group["coords"].extend(coords)
-                        break  # Found match, no need to try other variations
-
-        doc.close()
         print(f"Successfully attached coordinates to {len(matched_entities)} entity groups")
 
     except Exception as e:
@@ -1064,6 +1031,7 @@ def lambda_handler(event, context):
             doc.authenticate("")
 
         pages = []
+        text_coords_cache = []
         for page_num in range(doc.page_count):
             page = doc[page_num]
             pixmap = page.get_pixmap(dpi=200)
@@ -1072,9 +1040,11 @@ def lambda_handler(event, context):
                 "text": page.get_text(),
                 "image_bytes": image_bytes,
             })
+            # Extract text with coordinates for later lookup
+            text_coords_cache.append(page.get_text("dict"))
         doc.close()
     elif s3_uri:
-        pages, pdf_bytes = fetch_s3_pages(s3_uri)
+        pages, pdf_bytes, text_coords_cache = fetch_s3_pages(s3_uri)
     else:
         raise ValueError("Missing required field: s3_uri or local_pdf_path")
 
@@ -1175,30 +1145,16 @@ def lambda_handler(event, context):
     document_analysis_json = None
 
     try:
-        # Parse the stage2 JSON output to extract matched_entities
+        # Parse the stage2 JSON output to extract entities
         stage2_json = _extract_json_candidate(stage2_output)
 
         if stage2_json and isinstance(stage2_json, dict):
-            matched_entities = stage2_json.get("matched_entities", [])
+            entities = stage2_json.get("entities", [])
 
-            if isinstance(matched_entities, list) and matched_entities:
-                print(f"Attaching coordinates to {len(matched_entities)} matched entities")
-                # Attach coords in-place, passing stage1 outputs for Textract geometry
-                attach_coords_to_matched_entities(pdf_bytes, matched_entities, all_stage1_outputs)
-
-            # Process orphaned entities (entities without summary pages)
-            # Treat them as regular groups, just without summary pages
-            orphaned_entities = stage2_json.get("orphaned_entities", [])
-            if isinstance(orphaned_entities, list) and orphaned_entities:
-                print(f"Attaching coordinates to {len(orphaned_entities)} orphaned entities")
-                # Normalize orphaned entity structure to match matched_entities structure
-                for orphan in orphaned_entities:
-                    orphan_pages = orphan.get("pages", [])
-                    orphan["summary_pages"] = []  # No summary pages
-                    orphan["supporting_pages"] = orphan_pages  # All pages are supporting
-                    orphan["summary_objects"] = []
-                    orphan["supporting_objects"] = orphan.get("objects", [])
-                attach_coords_to_matched_entities(pdf_bytes, orphaned_entities, all_stage1_outputs)
+            if isinstance(entities, list) and entities:
+                print(f"Attaching coordinates to {len(entities)} entity groups")
+                # Attach coords using cached text (no PDF reopening needed!)
+                attach_coords_to_matched_entities(entities, text_coords_cache, all_stage1_outputs)
 
             # Transform to DocumentAnalysis format
             # Extract document_id from event if available, otherwise use placeholder
