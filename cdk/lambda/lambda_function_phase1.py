@@ -414,9 +414,12 @@ def _compute_normalized_coords(rect, page_rect) -> Dict[str, float]:
     Compute normalized bounding box coordinates.
     Returns coords as floats between 0 and 1 relative to page dimensions.
 
+    IMPORTANT: page_rect should be the MediaBox (original dimensions), not page.rect,
+    to avoid issues with rotated pages.
+
     Args:
         rect: PyMuPDF Rect object from search_for
-        page_rect: PyMuPDF Rect object representing page bounds
+        page_rect: PyMuPDF Rect object representing page bounds (use MediaBox)
 
     Returns:
         Dict with keys: x, y, width, height (all normalized 0-1)
@@ -549,14 +552,38 @@ def _find_text_coords_on_page(
         page_index = page_number - 1
         if page_index >= 0 and page_index < doc.page_count:
             page = doc[page_index]
-            page_rect = page.rect
+
+            # Use MediaBox for original unrotated dimensions
+            # We don't handle rotation - user can rotate manually if needed
+            mediabox = page.mediabox
+            page_width = mediabox.width
+            page_height = mediabox.height
 
             # Try exact phrase search
             rects = page.search_for(search_text.strip())
             if rects:
                 coords = []
                 for rect in rects:
-                    coord = _compute_normalized_coords(rect, page_rect)
+                    # Normalize using original MediaBox dimensions
+                    coord = {
+                        "x": (rect.x0 - mediabox.x0) / page_width,
+                        "y": (rect.y0 - mediabox.y0) / page_height,
+                        "width": (rect.x1 - rect.x0) / page_width,
+                        "height": (rect.y1 - rect.y0) / page_height,
+                    }
+
+                    # Clamp to valid range
+                    coord["x"] = max(0.0, min(1.0, coord["x"]))
+                    coord["y"] = max(0.0, min(1.0, coord["y"]))
+                    coord["width"] = max(0.0, min(1.0, coord["width"]))
+                    coord["height"] = max(0.0, min(1.0, coord["height"]))
+
+                    # Ensure bounds
+                    if coord["x"] + coord["width"] > 1.0:
+                        coord["width"] = 1.0 - coord["x"]
+                    if coord["y"] + coord["height"] > 1.0:
+                        coord["height"] = 1.0 - coord["y"]
+
                     coords.append(coord)
                 print(f"PyMuPDF found '{search_text}' on page {page_number}: {len(coords)} matches")
                 return coords
@@ -569,7 +596,26 @@ def _find_text_coords_on_page(
                 if rects:
                     coords = []
                     for rect in rects:
-                        coord = _compute_normalized_coords(rect, page_rect)
+                        # Normalize using original MediaBox dimensions
+                        coord = {
+                            "x": (rect.x0 - mediabox.x0) / page_width,
+                            "y": (rect.y0 - mediabox.y0) / page_height,
+                            "width": (rect.x1 - rect.x0) / page_width,
+                            "height": (rect.y1 - rect.y0) / page_height,
+                        }
+
+                        # Clamp to valid range
+                        coord["x"] = max(0.0, min(1.0, coord["x"]))
+                        coord["y"] = max(0.0, min(1.0, coord["y"]))
+                        coord["width"] = max(0.0, min(1.0, coord["width"]))
+                        coord["height"] = max(0.0, min(1.0, coord["height"]))
+
+                        # Ensure bounds
+                        if coord["x"] + coord["width"] > 1.0:
+                            coord["width"] = 1.0 - coord["x"]
+                        if coord["y"] + coord["height"] > 1.0:
+                            coord["height"] = 1.0 - coord["y"]
+
                         coords.append(coord)
                     print(f"PyMuPDF found '{search_no_punct}' on page {page_number}: {len(coords)} matches")
                     return coords
@@ -794,64 +840,7 @@ def to_document_analysis(
 
         analysis["groups"].append(group)
 
-    # Process orphaned entities (entities without matches)
-    orphaned_entities_list = matched_entities_root.get("orphaned_entities", [])
-    if isinstance(orphaned_entities_list, list):
-        for orphan_idx, orphaned_entity in enumerate(orphaned_entities_list):
-            if not isinstance(orphaned_entity, dict):
-                continue
-
-            # Generate unique group ID for orphaned entities
-            group_id = f"orphan_{orphan_idx}"
-
-            # Extract orphaned entity metadata
-            # Check both "entity_name" (for vendors/companies) and "name" (for people/employees)
-            label = orphaned_entity.get("entity_name") or orphaned_entity.get("name", f"Orphaned {orphan_idx}")
-            pages = orphaned_entity.get("pages", []) or []
-
-            occurrences = []
-
-            # Process coords attached to orphaned entity
-            entity_coords = orphaned_entity.get("coords", [])
-            if isinstance(entity_coords, list):
-                for coord_idx, coord in enumerate(entity_coords):
-                    if not isinstance(coord, dict):
-                        continue
-
-                    page_number = coord.get("page_number")
-                    role = coord.get("role", "orphaned")
-
-                    if not page_number:
-                        continue
-
-                    occurrence_id = f"{group_id}_p{page_number}_c{coord_idx}"
-                    coord_box = {k: v for k, v in coord.items() if k not in ["page_number", "role"]}
-
-                    occurrence = {
-                        "occurrenceId": occurrence_id,
-                        "groupId": group_id,
-                        "pageNumber": page_number,
-                        "role": role,
-                        "coords": [coord_box],
-                        "snippet": label,
-                    }
-                    occurrences.append(occurrence)
-
-            # Build orphaned group
-            orphaned_group = {
-                "groupId": group_id,
-                "label": label,
-                "kind": "orphaned",
-                "summaryPages": [],
-                "supportingPages": pages,
-                "occurrences": occurrences,
-                "meta": {
-                    "rawObjects": orphaned_entity.get("objects", [])
-                }
-            }
-
-            analysis["groups"].append(orphaned_group)
-
+    # Orphaned entities are no longer processed - only matched entities appear in the UI
     return analysis
 
 
@@ -1101,20 +1090,8 @@ def lambda_handler(event, context):
                 # Attach coords in-place, passing stage1 outputs for Textract geometry
                 attach_coords_to_matched_entities(pdf_bytes, matched_entities, all_stage1_outputs)
 
-            # Also attach coordinates to orphaned entities
-            orphaned_entities = stage2_json.get("orphaned_entities", [])
-            if isinstance(orphaned_entities, list) and orphaned_entities:
-                print(f"Attaching coordinates to {len(orphaned_entities)} orphaned entities")
-                # Normalize orphaned entity structure to match matched_entities structure
-                # Orphaned entities have "pages" instead of "summary_pages"/"supporting_pages"
-                for orphan in orphaned_entities:
-                    pages = orphan.get("pages", [])
-                    # Treat all orphaned pages as supporting pages
-                    orphan["summary_pages"] = []
-                    orphan["supporting_pages"] = pages
-                    orphan["summary_objects"] = []
-                    orphan["supporting_objects"] = orphan.get("objects", [])
-                attach_coords_to_matched_entities(pdf_bytes, orphaned_entities, all_stage1_outputs)
+            # Skip orphaned entities - we only show matched entities
+            # If Stage 2 can't match them properly, they won't appear in the UI
 
             # Transform to DocumentAnalysis format
             # Extract document_id from event if available, otherwise use placeholder
