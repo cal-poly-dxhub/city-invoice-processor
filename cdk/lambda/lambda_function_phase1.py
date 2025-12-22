@@ -553,21 +553,34 @@ def _find_text_coords_on_page(
         if page_index >= 0 and page_index < doc.page_count:
             page = doc[page_index]
 
-            # Use MediaBox for original unrotated dimensions
-            # We don't handle rotation - user can rotate manually if needed
-            mediabox = page.mediabox
-            page_width = mediabox.width
-            page_height = mediabox.height
+            # Get page dimensions accounting for rotation
+            # PyMuPDF's search_for() returns coords in the rotated coordinate space
+            page_rect = page.rect
+            rotation = page.rotation
+
+            # For 90° or 270° rotation, dimensions are swapped in the coordinate space
+            if rotation in (90, 270):
+                page_width = page_rect.height
+                page_height = page_rect.width
+            else:
+                page_width = page_rect.width
+                page_height = page_rect.height
 
             # Try exact phrase search
             rects = page.search_for(search_text.strip())
             if rects:
                 coords = []
-                for rect in rects:
-                    # Normalize using original MediaBox dimensions
+                for i, rect in enumerate(rects):
+                    # Debug logging for coordinate issues (should be rare now with rotation fix)
+                    if rect.x0 > page_width or rect.y0 > page_height:
+                        print(f"  WARNING: Match {i+1} coordinates still exceed page dimensions after rotation fix!")
+                        print(f"    rect: ({rect.x0:.1f}, {rect.y0:.1f}, {rect.x1:.1f}, {rect.y1:.1f})")
+                        print(f"    page: width={page_width:.1f}, height={page_height:.1f}, rotation={rotation}°")
+
+                    # Normalize using displayed page dimensions (accounts for rotation)
                     coord = {
-                        "x": (rect.x0 - mediabox.x0) / page_width,
-                        "y": (rect.y0 - mediabox.y0) / page_height,
+                        "x": (rect.x0 - page_rect.x0) / page_width,
+                        "y": (rect.y0 - page_rect.y0) / page_height,
                         "width": (rect.x1 - rect.x0) / page_width,
                         "height": (rect.y1 - rect.y0) / page_height,
                     }
@@ -596,10 +609,10 @@ def _find_text_coords_on_page(
                 if rects:
                     coords = []
                     for rect in rects:
-                        # Normalize using original MediaBox dimensions
+                        # Normalize using displayed page dimensions (accounts for rotation)
                         coord = {
-                            "x": (rect.x0 - mediabox.x0) / page_width,
-                            "y": (rect.y0 - mediabox.y0) / page_height,
+                            "x": (rect.x0 - page_rect.x0) / page_width,
+                            "y": (rect.y0 - page_rect.y0) / page_height,
                             "width": (rect.x1 - rect.x0) / page_width,
                             "height": (rect.y1 - rect.y0) / page_height,
                         }
@@ -618,6 +631,31 @@ def _find_text_coords_on_page(
 
                         coords.append(coord)
                     print(f"PyMuPDF found '{search_no_punct}' on page {page_number}: {len(coords)} matches")
+                    return coords
+
+            # Last resort: try uppercase version (for logo text like "ACC BUSINESS")
+            search_upper = search_text.upper().strip()
+            if search_upper != search_text.strip():
+                rects = page.search_for(search_upper)
+                if rects:
+                    coords = []
+                    for rect in rects:
+                        coord = {
+                            "x": (rect.x0 - page_rect.x0) / page_width,
+                            "y": (rect.y0 - page_rect.y0) / page_height,
+                            "width": (rect.x1 - rect.x0) / page_width,
+                            "height": (rect.y1 - rect.y0) / page_height,
+                        }
+                        coord["x"] = max(0.0, min(1.0, coord["x"]))
+                        coord["y"] = max(0.0, min(1.0, coord["y"]))
+                        coord["width"] = max(0.0, min(1.0, coord["width"]))
+                        coord["height"] = max(0.0, min(1.0, coord["height"]))
+                        if coord["x"] + coord["width"] > 1.0:
+                            coord["width"] = 1.0 - coord["x"]
+                        if coord["y"] + coord["height"] > 1.0:
+                            coord["height"] = 1.0 - coord["y"]
+                        coords.append(coord)
+                    print(f"PyMuPDF found uppercase '{search_upper}' on page {page_number}: {len(coords)} matches")
                     return coords
 
             print(f"PyMuPDF could not find '{search_text}' on page {page_number}")
@@ -840,7 +878,60 @@ def to_document_analysis(
 
         analysis["groups"].append(group)
 
-    # Orphaned entities are no longer processed - only matched entities appear in the UI
+    # Process orphaned entities as regular groups (no special treatment)
+    orphaned_entities_list = matched_entities_root.get("orphaned_entities", [])
+    if isinstance(orphaned_entities_list, list):
+        for orphan_idx, orphaned_entity in enumerate(orphaned_entities_list):
+            if not isinstance(orphaned_entity, dict):
+                continue
+
+            group_id = f"orphan_{orphan_idx}"
+            label = orphaned_entity.get("entity_name") or orphaned_entity.get("name", f"Entity {len(analysis['groups']) + 1}")
+            summary_pages = orphaned_entity.get("summary_pages", []) or []
+            supporting_pages = orphaned_entity.get("supporting_pages", []) or []
+
+            occurrences = []
+            entity_coords = orphaned_entity.get("coords", [])
+            if isinstance(entity_coords, list):
+                for coord_idx, coord in enumerate(entity_coords):
+                    if not isinstance(coord, dict):
+                        continue
+
+                    page_number = coord.get("page_number")
+                    role = coord.get("role", "supporting")
+
+                    if not page_number:
+                        continue
+
+                    occurrence_id = f"{group_id}_p{page_number}_c{coord_idx}"
+                    coord_box = {k: v for k, v in coord.items() if k not in ["page_number", "role"]}
+
+                    occurrence = {
+                        "occurrenceId": occurrence_id,
+                        "groupId": group_id,
+                        "pageNumber": page_number,
+                        "role": role,
+                        "coords": [coord_box],
+                        "snippet": label,
+                    }
+                    occurrences.append(occurrence)
+
+            # Build group (no special "kind" field - treat as regular entity)
+            orphaned_group = {
+                "groupId": group_id,
+                "label": label,
+                "kind": None,  # No special treatment
+                "summaryPages": summary_pages,
+                "supportingPages": supporting_pages,
+                "occurrences": occurrences,
+                "meta": {
+                    "rawSummaryObjects": orphaned_entity.get("summary_objects", []),
+                    "rawSupportingObjects": orphaned_entity.get("supporting_objects", [])
+                }
+            }
+
+            analysis["groups"].append(orphaned_group)
+
     return analysis
 
 
@@ -894,20 +985,25 @@ def attach_coords_to_matched_entities(
             if isinstance(all_objects, list):
                 for obj in all_objects:
                     if isinstance(obj, dict):
-                        # Check various name fields
-                        possible_names = [
-                            obj.get("name"),
-                            obj.get("vendor"),
-                            obj.get("company_name"),
-                            obj.get("vendor_name"),
-                            obj.get("service_provider"),
-                        ]
-                        # Also check nested company.name structure
-                        if "company" in obj and isinstance(obj["company"], dict):
-                            possible_names.append(obj["company"].get("name"))
+                        # Check various name fields (both string and nested dict forms)
+                        possible_names = []
+
+                        # Direct string fields
+                        for key in ["name", "company_name", "vendor_name", "service_provider"]:
+                            val = obj.get(key)
+                            if val and isinstance(val, str):
+                                possible_names.append(val)
+
+                        # Nested dict fields (e.g., vendor.name, company.name, client.name)
+                        for key in ["vendor", "company", "client"]:
+                            val = obj.get(key)
+                            if val and isinstance(val, dict) and "name" in val:
+                                nested_name = val["name"]
+                                if isinstance(nested_name, str):
+                                    possible_names.append(nested_name)
 
                         for obj_name in possible_names:
-                            if obj_name and obj_name not in name_variations:
+                            if obj_name not in name_variations:
                                 name_variations.append(obj_name)
 
             # Attach coordinates to entity name on each summary page
@@ -1090,8 +1186,19 @@ def lambda_handler(event, context):
                 # Attach coords in-place, passing stage1 outputs for Textract geometry
                 attach_coords_to_matched_entities(pdf_bytes, matched_entities, all_stage1_outputs)
 
-            # Skip orphaned entities - we only show matched entities
-            # If Stage 2 can't match them properly, they won't appear in the UI
+            # Process orphaned entities (entities without summary pages)
+            # Treat them as regular groups, just without summary pages
+            orphaned_entities = stage2_json.get("orphaned_entities", [])
+            if isinstance(orphaned_entities, list) and orphaned_entities:
+                print(f"Attaching coordinates to {len(orphaned_entities)} orphaned entities")
+                # Normalize orphaned entity structure to match matched_entities structure
+                for orphan in orphaned_entities:
+                    orphan_pages = orphan.get("pages", [])
+                    orphan["summary_pages"] = []  # No summary pages
+                    orphan["supporting_pages"] = orphan_pages  # All pages are supporting
+                    orphan["summary_objects"] = []
+                    orphan["supporting_objects"] = orphan.get("objects", [])
+                attach_coords_to_matched_entities(pdf_bytes, orphaned_entities, all_stage1_outputs)
 
             # Transform to DocumentAnalysis format
             # Extract document_id from event if available, otherwise use placeholder
