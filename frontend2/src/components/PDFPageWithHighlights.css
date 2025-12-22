@@ -1,0 +1,80 @@
+.pdf-page-with-highlights-container {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.pdf-page {
+  position: relative;
+  display: inline-block;
+  background: #f5f5f5;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 1rem;
+}
+
+.pdf-page-canvas {
+  display: block;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.pdf-page-loading {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(255, 255, 255, 0.9);
+  padding: 1rem 2rem;
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  color: #646cff;
+  font-weight: 500;
+  z-index: 10;
+}
+
+.pdf-page-error {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(255, 240, 240, 0.95);
+  padding: 1rem 2rem;
+  border-radius: 4px;
+  border: 1px solid #ff6b6b;
+  color: #c92a2a;
+  font-weight: 500;
+  z-index: 10;
+}
+
+.highlights-overlay {
+  position: absolute;
+  pointer-events: none; /* Allow clicking through to PDF canvas */
+  z-index: 5;
+  /* Position and size are set dynamically via inline styles */
+}
+
+.highlight-rect {
+  position: absolute;
+  background-color: rgba(255, 255, 0, 0.3); /* Translucent yellow */
+  border: 2px solid rgba(255, 200, 0, 0.8); /* Slightly darker yellow border */
+  box-sizing: border-box;
+  pointer-events: auto; /* Make individual highlights interactive */
+  transition: background-color 0.2s ease;
+}
+
+.highlight-rect:hover {
+  background-color: rgba(255, 255, 0, 0.5); /* Brighter on hover */
+  border-color: rgba(255, 180, 0, 1);
+}
+
+/* Orphaned entity highlights - orange/amber color */
+.highlight-rect.orphaned {
+  background-color: rgba(255, 145, 0, 0.3); /* Translucent orange */
+  border: 2px solid rgba(255, 100, 0, 0.8); /* Darker orange border */
+}
+
+.highlight-rect.orphaned:hover {
+  background-color: rgba(255, 145, 0, 0.5); /* Brighter orange on hover */
+  border-color: rgba(255, 80, 0, 1);
+}

@@ -188,6 +188,38 @@ def _llm_failed_to_detect_entities(output_text: str) -> bool:
     return False
 
 
+def _extract_textract_geometry(image_bytes: bytes) -> List[Dict]:
+    """
+    Extract text geometry from Textract for coordinate highlighting.
+    Returns list of {text, bbox} dicts with normalized coordinates.
+    """
+    try:
+        response = textract_client.analyze_document(
+            Document={"Bytes": image_bytes},
+            FeatureTypes=["TABLES", "FORMS"],
+        )
+
+        textract_geometry = []
+        for block in response.get("Blocks", []):
+            if block.get("BlockType") == "LINE" and block.get("Text"):
+                if "Geometry" in block and "BoundingBox" in block["Geometry"]:
+                    bbox = block["Geometry"]["BoundingBox"]
+                    textract_geometry.append({
+                        "text": block["Text"],
+                        "bbox": {
+                            "x": bbox.get("Left", 0),
+                            "y": bbox.get("Top", 0),
+                            "width": bbox.get("Width", 0),
+                            "height": bbox.get("Height", 0)
+                        }
+                    })
+
+        return textract_geometry
+    except Exception as e:
+        print(f"Failed to extract Textract geometry: {e}")
+        return []
+
+
 def _textract_fallback(page_number: int, image_bytes: bytes, model_id: str = None, max_tokens: int = 16000,
                       temperature: float = 0.0, system_prompt: str = None, user_request: str = None,
                       few_shot_examples: list = None) -> str:
@@ -389,17 +421,44 @@ def _compute_normalized_coords(rect, page_rect) -> Dict[str, float]:
     Returns:
         Dict with keys: x, y, width, height (all normalized 0-1)
     """
+    # Compute normalized coordinates
+    x = (rect.x0 - page_rect.x0) / page_rect.width
+    y = (rect.y0 - page_rect.y0) / page_rect.height
+    width = (rect.x1 - rect.x0) / page_rect.width
+    height = (rect.y1 - rect.y0) / page_rect.height
+
+    # Log if coordinates are out of bounds (indicates a problem)
+    if x < 0 or x > 1 or y < 0 or y > 1 or width < 0 or width > 1 or height < 0 or height > 1:
+        print(f"WARNING: Coordinates out of bounds before clamping: x={x:.4f}, y={y:.4f}, w={width:.4f}, h={height:.4f}")
+        print(f"  rect: ({rect.x0:.1f}, {rect.y0:.1f}, {rect.x1:.1f}, {rect.y1:.1f})")
+        print(f"  page_rect: ({page_rect.x0:.1f}, {page_rect.y0:.1f}, {page_rect.x1:.1f}, {page_rect.y1:.1f}), width={page_rect.width:.1f}, height={page_rect.height:.1f}")
+
+    # Clamp to [0, 1] range and validate
+    x = max(0.0, min(1.0, x))
+    y = max(0.0, min(1.0, y))
+    width = max(0.0, min(1.0, width))
+    height = max(0.0, min(1.0, height))
+
+    # Ensure x + width <= 1.0 and y + height <= 1.0
+    if x + width > 1.0:
+        width = 1.0 - x
+    if y + height > 1.0:
+        height = 1.0 - y
+
     return {
-        "x": (rect.x0 - page_rect.x0) / page_rect.width,
-        "y": (rect.y0 - page_rect.y0) / page_rect.height,
-        "width": (rect.x1 - rect.x0) / page_rect.width,
-        "height": (rect.y1 - rect.y0) / page_rect.height,
+        "x": x,
+        "y": y,
+        "width": width,
+        "height": height,
     }
 
 
 def _search_textract_geometry(textract_geometry: List[Dict], search_text: str) -> List[Dict[str, float]]:
     """
     Search through Textract geometry data to find matching text.
+    Uses intelligent matching: requires the search text to be a distinct word/phrase,
+    not just a substring of a longer word.
+
     Textract coordinates are already normalized (0-1).
 
     Args:
@@ -414,12 +473,33 @@ def _search_textract_geometry(textract_geometry: List[Dict], search_text: str) -
 
     coords = []
     search_text_lower = search_text.lower().strip()
+    search_words = search_text_lower.split()
 
     for item in textract_geometry:
         item_text = item.get("text", "").lower().strip()
+        item_words = item_text.split()
 
-        # Check for exact match or if search text is contained in this line
-        if search_text_lower in item_text:
+        # Check if all search words appear in this line as complete words
+        # This prevents "ACC" from matching "account"
+        all_words_found = True
+        for search_word in search_words:
+            # Check if this search word appears as a complete word (not substring)
+            if search_word not in item_words:
+                # Also check if the search word appears with punctuation
+                # e.g., "Inc" should match "Inc." or "Inc,"
+                found_with_punct = False
+                for item_word in item_words:
+                    # Remove common punctuation and compare
+                    clean_item_word = item_word.strip('.,;:!?()')
+                    if search_word == clean_item_word:
+                        found_with_punct = True
+                        break
+
+                if not found_with_punct:
+                    all_words_found = False
+                    break
+
+        if all_words_found:
             bbox = item.get("bbox", {})
             if bbox and bbox.get("width", 0) > 0 and bbox.get("height", 0) > 0:
                 coords.append({
@@ -453,44 +533,7 @@ def _find_text_coords_on_page(
         return []
 
     try:
-        # Try PyMuPDF search first
-        page_index = page_number - 1
-        if page_index >= 0 and page_index < doc.page_count:
-            page = doc[page_index]
-            page_rect = page.rect
-            rects = page.search_for(search_text.strip())
-
-            if rects:
-                coords = []
-                for rect in rects:
-                    coord = _compute_normalized_coords(rect, page_rect)
-                    coords.append(coord)
-                return coords
-
-            # If exact match failed, try searching for individual words
-            # This handles cases where names are split across lines or text blocks
-            words = search_text.strip().split()
-            # Filter out very short words (like "I", "II") that cause false positives
-            significant_words = [w for w in words if len(w) >= 3]
-            if len(significant_words) >= 2:
-                all_word_rects = []
-                for word in significant_words:
-                    word_rects = page.search_for(word)
-                    all_word_rects.extend(word_rects)
-
-                if all_word_rects:
-                    # Group nearby rectangles (likely part of the same entity occurrence)
-                    grouped_rects = _group_nearby_rects(all_word_rects, len(significant_words))
-                    if grouped_rects:
-                        coords = []
-                        for group in grouped_rects:
-                            # Compute bounding box that encompasses all rects in this group
-                            combined_rect = _combine_rects(group)
-                            coord = _compute_normalized_coords(combined_rect, page_rect)
-                            coords.append(coord)
-                        return coords
-
-        # If no results from PyMuPDF, try Textract geometry
+        # Try Textract geometry first (most accurate for scanned/complex pages)
         if stage1_outputs:
             for page_data in stage1_outputs:
                 if page_data.get("page_number") == page_number:
@@ -500,6 +543,38 @@ def _find_text_coords_on_page(
                         if coords:
                             return coords
                     break
+
+        # Fall back to PyMuPDF simple substring search
+        # Keep it simple - just search for the text as-is
+        page_index = page_number - 1
+        if page_index >= 0 and page_index < doc.page_count:
+            page = doc[page_index]
+            page_rect = page.rect
+
+            # Try exact phrase search
+            rects = page.search_for(search_text.strip())
+            if rects:
+                coords = []
+                for rect in rects:
+                    coord = _compute_normalized_coords(rect, page_rect)
+                    coords.append(coord)
+                print(f"PyMuPDF found '{search_text}' on page {page_number}: {len(coords)} matches")
+                return coords
+
+            # If no exact match, try without punctuation
+            # E.g., "Godspeed Courier Services, Inc" -> "Godspeed Courier Services Inc"
+            search_no_punct = search_text.replace(",", "").replace(".", "").strip()
+            if search_no_punct != search_text.strip():
+                rects = page.search_for(search_no_punct)
+                if rects:
+                    coords = []
+                    for rect in rects:
+                        coord = _compute_normalized_coords(rect, page_rect)
+                        coords.append(coord)
+                    print(f"PyMuPDF found '{search_no_punct}' on page {page_number}: {len(coords)} matches")
+                    return coords
+
+            print(f"PyMuPDF could not find '{search_text}' on page {page_number}")
 
         return []
     except Exception as e:
@@ -664,7 +739,8 @@ def to_document_analysis(
         group_id = f"g_{group_idx}"
 
         # Extract group metadata
-        label = matched_entity.get("name", f"Group {group_idx}")
+        # Check both "entity_name" (for vendors/companies) and "name" (for people/employees)
+        label = matched_entity.get("entity_name") or matched_entity.get("name", f"Group {group_idx}")
         summary_pages = matched_entity.get("summary_pages", []) or []
         supporting_pages = matched_entity.get("supporting_pages", []) or []
 
@@ -729,7 +805,8 @@ def to_document_analysis(
             group_id = f"orphan_{orphan_idx}"
 
             # Extract orphaned entity metadata
-            label = orphaned_entity.get("name", f"Orphaned {orphan_idx}")
+            # Check both "entity_name" (for vendors/companies) and "name" (for people/employees)
+            label = orphaned_entity.get("entity_name") or orphaned_entity.get("name", f"Orphaned {orphan_idx}")
             pages = orphaned_entity.get("pages", []) or []
 
             occurrences = []
@@ -806,7 +883,8 @@ def attach_coords_to_matched_entities(
 
         # Process each matched entity group
         for entity_group in matched_entities:
-            entity_name = entity_group.get("name", "Unknown")
+            # Check both "entity_name" (for vendors/companies) and "name" (for people/employees)
+            entity_name = entity_group.get("entity_name") or entity_group.get("name", "Unknown")
             summary_pages = entity_group.get("summary_pages", [])
             supporting_pages = entity_group.get("supporting_pages", [])
 
@@ -819,17 +897,33 @@ def attach_coords_to_matched_entities(
                 if len(parts) == 2:
                     name_variations.append(f"{parts[1]} {parts[0]}")
 
-            # Extract names from supporting_objects for additional variations
-            supporting_objects = entity_group.get("supporting_objects", [])
-            if isinstance(supporting_objects, list):
-                for obj in supporting_objects:
-                    if isinstance(obj, dict) and "name" in obj:
-                        obj_name = obj["name"]
-                        if obj_name and obj_name not in name_variations:
-                            name_variations.append(obj_name)
+            # Extract names from summary_objects and supporting_objects for additional variations
+            all_objects = (
+                entity_group.get("summary_objects", []) +
+                entity_group.get("supporting_objects", [])
+            )
+            if isinstance(all_objects, list):
+                for obj in all_objects:
+                    if isinstance(obj, dict):
+                        # Check various name fields
+                        possible_names = [
+                            obj.get("name"),
+                            obj.get("vendor"),
+                            obj.get("company_name"),
+                            obj.get("vendor_name"),
+                            obj.get("service_provider"),
+                        ]
+                        # Also check nested company.name structure
+                        if "company" in obj and isinstance(obj["company"], dict):
+                            possible_names.append(obj["company"].get("name"))
+
+                        for obj_name in possible_names:
+                            if obj_name and obj_name not in name_variations:
+                                name_variations.append(obj_name)
 
             # Attach coordinates to entity name on each summary page
             entity_group["coords"] = []
+            print(f"Searching for entity '{entity_name}' with {len(name_variations)} name variations: {name_variations[:5]}")
             for page_num in summary_pages:
                 # Try all name variations until we find a match
                 for name_var in name_variations:
@@ -929,6 +1023,8 @@ def lambda_handler(event, context):
             temperature=temperature,
         )
         output_text = response["content"][0]["text"]
+
+        # If LLM failed to detect entities, use full Textract fallback
         if _llm_failed_to_detect_entities(output_text) and page.get("image_bytes"):
             try:
                 print(f"Falling back to Textract for page {i+1}")
@@ -945,6 +1041,7 @@ def lambda_handler(event, context):
             except Exception as textract_error:
                 print(f"Textract fallback failed for page {i+1}: {textract_error}")
                 # Continue with the LLM output even if Textract fails
+
         print(f"Completed page {i+1}")
         return i, _normalize_stage1_output(i + 1, output_text)
 

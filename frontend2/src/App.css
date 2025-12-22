@@ -1,0 +1,509 @@
+.app {
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: 1.5rem;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.app-header {
+  margin-bottom: 2rem;
+  padding-bottom: 1rem;
+  border-bottom: 2px solid #646cff;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.app-header h1 {
+  margin: 0;
+  color: #646cff;
+}
+
+.load-pdf-button {
+  background: #646cff;
+  color: white;
+  border: none;
+  padding: 0.75rem 1.5rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 1rem;
+  font-weight: 500;
+  transition: background 0.2s;
+}
+
+.load-pdf-button:hover {
+  background: #535ac8;
+}
+
+.app-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+}
+
+.app-layout {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 1.5rem;
+  align-items: start;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+.pdf-viewer-section {
+  background: rgba(100, 108, 255, 0.05);
+  border-radius: 8px;
+  padding: 1.5rem;
+  min-height: 600px;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.pdf-viewer-section canvas {
+  max-width: 100%;
+  height: auto;
+}
+
+.pdf-controls {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+  padding: 1rem;
+  background: white;
+  border-radius: 6px;
+}
+
+.pdf-controls button {
+  background: #646cff;
+  color: white;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: background 0.2s;
+}
+
+.pdf-controls button:hover:not(:disabled) {
+  background: #535ac8;
+}
+
+.pdf-controls button:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+}
+
+.pdf-controls .rotate-button {
+  background: #48bb78;
+  margin-right: 0.5rem;
+}
+
+.pdf-controls .rotate-button:hover {
+  background: #38a169;
+}
+
+.pdf-controls .add-page-button {
+  background: #48bb78;
+  margin-right: 0.5rem;
+}
+
+.pdf-controls .add-page-button:hover {
+  background: #38a169;
+}
+
+.pdf-controls .remove-page-button {
+  background: #f56565;
+  margin-right: 0.5rem;
+}
+
+.pdf-controls .remove-page-button:hover {
+  background: #e53e3e;
+}
+
+.page-indicator {
+  font-weight: 500;
+  color: #333;
+  min-width: 120px;
+  text-align: center;
+}
+
+.group-info {
+  background: white;
+  border-radius: 6px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+  border-left: 4px solid #646cff;
+}
+
+.group-name {
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 0.5rem;
+}
+
+.pages-with-highlights {
+  color: #666;
+  font-size: 0.9rem;
+}
+
+.jump-to-pages {
+  display: flex;
+  gap: 0.5rem;
+  margin-left: 1rem;
+  padding-left: 1rem;
+  border-left: 2px solid #ddd;
+  overflow-x: auto;
+  max-width: 600px;
+  flex-shrink: 1;
+  /* Hide scrollbar on Firefox */
+  scrollbar-width: thin;
+  scrollbar-color: #646cff transparent;
+}
+
+/* Webkit scrollbar styling */
+.jump-to-pages::-webkit-scrollbar {
+  height: 6px;
+}
+
+.jump-to-pages::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.jump-to-pages::-webkit-scrollbar-thumb {
+  background: #646cff;
+  border-radius: 3px;
+}
+
+.jump-to-pages::-webkit-scrollbar-thumb:hover {
+  background: #535ac8;
+}
+
+.jump-to-pages button {
+  min-width: 40px;
+  padding: 0.5rem;
+  flex-shrink: 0;
+}
+
+.jump-to-pages button.active {
+  background: #535ac8;
+  font-weight: bold;
+}
+
+.no-pdf-message {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 400px;
+  color: #888;
+  font-size: 1.1rem;
+  text-align: center;
+}
+
+.pdf-error-message {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 400px;
+  color: #c92a2a;
+  text-align: center;
+  background: rgba(255, 107, 107, 0.1);
+  border: 2px solid #ff6b6b;
+  border-radius: 8px;
+  padding: 2rem;
+}
+
+.pdf-error-message h3 {
+  margin: 0 0 1rem 0;
+  color: #c92a2a;
+}
+
+.pdf-error-message p {
+  margin: 0.5rem 0;
+}
+
+.review-section {
+  background: rgba(100, 108, 255, 0.05);
+  border-radius: 8px;
+  padding: 1.5rem;
+  max-width: 100%;
+}
+
+/* Groups List Section */
+.groups-list-section {
+  background: rgba(100, 108, 255, 0.05);
+  border-radius: 8px;
+  padding: 1.25rem;
+  margin-bottom: 1.5rem;
+}
+
+.groups-list-section h2 {
+  margin: 0 0 1rem 0;
+  color: #646cff;
+  font-size: 1.2rem;
+}
+
+.groups-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.group-item {
+  background: white;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.group-item:hover {
+  background: #f9f9ff;
+  border-color: #646cff;
+  transform: translateX(4px);
+}
+
+.group-item.active {
+  background: #646cff;
+  border-color: #646cff;
+  color: white;
+}
+
+.group-item.active .group-label,
+.group-item.active .group-meta {
+  color: white;
+}
+
+.group-item.user-created {
+  border-left: 4px solid #48bb78;
+}
+
+.group-item.orphaned {
+  border-left: 4px solid #f56565;
+}
+
+.group-item.orphaned .group-label {
+  color: #c92a2a;
+  font-weight: 600;
+}
+
+.group-item.active.orphaned .group-label {
+  color: white;
+}
+
+.user-badge {
+  margin-left: 0.5rem;
+  color: #48bb78;
+  font-size: 1.2rem;
+}
+
+.group-item.active .user-badge {
+  color: #fff;
+}
+
+.orphaned-badge {
+  margin-left: 0.5rem;
+  color: #f56565;
+  font-size: 1.1rem;
+}
+
+.group-item.active .orphaned-badge {
+  color: #fff;
+}
+
+.group-item-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.group-label {
+  font-weight: 500;
+  color: #333;
+  font-size: 0.95rem;
+}
+
+.group-meta {
+  font-size: 0.8rem;
+  color: #888;
+}
+
+/* Page Management Tabs */
+.page-management-tabs {
+  margin-top: 0;
+}
+
+.tab-buttons {
+  display: flex;
+  gap: 0;
+  margin-bottom: 1rem;
+  border-bottom: 2px solid #ddd;
+}
+
+.tab-button {
+  background: none;
+  border: none;
+  padding: 0.75rem 1.5rem;
+  font-size: 1rem;
+  color: #666;
+  cursor: pointer;
+  border-bottom: 3px solid transparent;
+  transition: all 0.2s;
+  position: relative;
+  bottom: -2px;
+  flex: 1;
+  text-align: center;
+}
+
+.tab-button:hover {
+  color: #646cff;
+  background: rgba(100, 108, 255, 0.05);
+}
+
+.tab-button.active {
+  color: #646cff;
+  font-weight: 600;
+  border-bottom-color: #646cff;
+}
+
+.tab-content {
+  padding-top: 1rem;
+}
+
+.current-group-section {
+  background: rgba(100, 108, 255, 0.05);
+  border-radius: 8px;
+  padding: 1.25rem;
+  margin-bottom: 1rem;
+}
+
+.current-group-section h2 {
+  margin: 0;
+  color: #646cff;
+  font-size: 1.2rem;
+}
+
+.no-group-message {
+  padding: 2rem;
+  text-align: center;
+  color: #888;
+  font-style: italic;
+  background: rgba(255, 255, 255, 0.5);
+  border-radius: 6px;
+}
+
+@media (max-width: 1200px) {
+  .app-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.loading,
+.error {
+  padding: 2rem;
+  text-align: center;
+  font-size: 1.2rem;
+}
+
+.error {
+  color: #ff6b6b;
+  background: rgba(255, 107, 107, 0.1);
+  border-radius: 8px;
+}
+
+.success-message {
+  background: rgba(100, 200, 100, 0.1);
+  border: 2px solid #64c864;
+  border-radius: 8px;
+  padding: 1.5rem;
+  margin-bottom: 1rem;
+}
+
+.success-message h2 {
+  margin: 0 0 1rem 0;
+  color: #64c864;
+}
+
+.analysis-info p {
+  margin: 0.5rem 0;
+  font-size: 1.1rem;
+}
+
+.document-summary {
+  background: rgba(100, 108, 255, 0.05);
+  border-radius: 8px;
+  padding: 1.5rem;
+}
+
+.document-summary h3 {
+  margin-top: 0;
+  color: #646cff;
+}
+
+.document-summary dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.75rem 1.5rem;
+  margin: 0;
+}
+
+.document-summary dt {
+  font-weight: bold;
+  color: #888;
+}
+
+.document-summary dd {
+  margin: 0;
+}
+
+.groups-list {
+  background: rgba(100, 108, 255, 0.05);
+  border-radius: 8px;
+  padding: 1.5rem;
+}
+
+.groups-list h3 {
+  margin-top: 0;
+  color: #646cff;
+}
+
+.group-card {
+  background: white;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.group-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+
+.group-card h4 {
+  margin: 0 0 0.75rem 0;
+  color: #333;
+}
+
+.group-details {
+  display: flex;
+  gap: 1.5rem;
+  font-size: 0.9rem;
+  color: #666;
+}
+
+.group-details span {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
