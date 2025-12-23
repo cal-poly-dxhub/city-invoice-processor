@@ -34,17 +34,30 @@ function App() {
   // User-created groups (groups that don't exist in original DocumentAnalysis)
   const [userCreatedGroups, setUserCreatedGroups] = useState<Group[]>([]);
 
+  // Group management state
+  const [renamedGroups, setRenamedGroups] = useState<Map<string, string>>(new Map());
+  const [deletedGroups, setDeletedGroups] = useState<Set<string>>(new Set());
+  const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
+  const [combiningGroupId, setCombiningGroupId] = useState<string | null>(null);
+
   // Tab state for right sidebar
   const [activeTab, setActiveTab] = useState<'assigned' | 'unassigned'>('assigned');
 
   // PDF context
   const { loadPDF, pageCount, loading: pdfLoading, error: pdfError } = usePDFDocument();
 
-  // Combine original groups with user-created groups for a unified view
+  // Combine original groups with user-created groups, filter deleted, apply renames
   const allGroups = useMemo(() => {
-    if (!analysis) return userCreatedGroups;
-    return [...analysis.groups, ...userCreatedGroups];
-  }, [analysis, userCreatedGroups]);
+    const baseGroups = analysis ? [...analysis.groups, ...userCreatedGroups] : userCreatedGroups;
+
+    // Filter out deleted groups and apply renames
+    return baseGroups
+      .filter(g => !deletedGroups.has(g.groupId))
+      .map(g => {
+        const renamedLabel = renamedGroups.get(g.groupId);
+        return renamedLabel ? { ...g, label: renamedLabel } : g;
+      });
+  }, [analysis, userCreatedGroups, deletedGroups, renamedGroups]);
 
   // Compute unassigned pages
   const unassignedPages = useMemo(() => {
@@ -127,10 +140,10 @@ function App() {
     return pageRotations.get(currentPage) || 0;
   };
 
-  // Rotate current page by 90 degrees
-  const handleRotatePage = () => {
+  // Rotate current page by 90 degrees (positive = clockwise, negative = counter-clockwise)
+  const handleRotatePage = (degrees: number) => {
     const currentRotation = getCurrentRotation();
-    const newRotation = (currentRotation + 90) % 360;
+    const newRotation = (currentRotation + degrees + 360) % 360;
     setPageRotations(new Map(pageRotations).set(currentPage, newRotation));
   };
 
@@ -227,6 +240,67 @@ function App() {
     setCurrentPage(pageNumber);
   };
 
+  // Handle renaming a group
+  const handleRenameGroup = (groupId: string, newLabel: string) => {
+    setRenamedGroups(new Map(renamedGroups).set(groupId, newLabel));
+    setEditingGroupId(null);
+  };
+
+  // Handle deleting a group
+  const handleDeleteGroup = (groupId: string) => {
+    if (window.confirm('Are you sure you want to delete this group? Pages will become unassigned.')) {
+      // Mark group as deleted
+      const newDeleted = new Set(deletedGroups);
+      newDeleted.add(groupId);
+      setDeletedGroups(newDeleted);
+
+      // Remove page edits for this group (pages will become unassigned)
+      setPageEdits((prev) => {
+        const newEdits = { ...prev };
+        delete newEdits[groupId];
+        return newEdits;
+      });
+
+      // If this was the current group, switch to first available group
+      if (currentGroupId === groupId) {
+        const remainingGroups = allGroups.filter(g => g.groupId !== groupId);
+        setCurrentGroupId(remainingGroups.length > 0 ? remainingGroups[0].groupId : null);
+      }
+    }
+  };
+
+  // Handle combining two groups (merge sourceGroupId into targetGroupId)
+  const handleCombineGroups = (sourceGroupId: string, targetGroupId: string) => {
+    // Get all pages from source group
+    const sourceGroup = allGroups.find(g => g.groupId === sourceGroupId);
+    if (!sourceGroup) return;
+
+    const sourceEdits = pageEdits[sourceGroupId];
+    const sourcePages = getEffectivePagesForGroup(sourceGroup, sourceEdits, analysis?.pageCount ?? null);
+
+    // Add all source pages to target group
+    setPageEdits((prev) => {
+      const targetEdits = prev[targetGroupId] ?? { addedPages: [], removedPages: [] };
+      const newAddedPages = [...new Set([...targetEdits.addedPages, ...sourcePages])];
+
+      return {
+        ...prev,
+        [targetGroupId]: {
+          addedPages: newAddedPages,
+          removedPages: targetEdits.removedPages,
+        },
+      };
+    });
+
+    // Delete the source group
+    const newDeleted = new Set(deletedGroups);
+    newDeleted.add(sourceGroupId);
+    setDeletedGroups(newDeleted);
+
+    // Switch to target group
+    setCurrentGroupId(targetGroupId);
+  };
+
   // When group changes, jump to first page with highlights
   useEffect(() => {
     if (pagesToShow.length > 0) {
@@ -314,13 +388,22 @@ function App() {
                   </div>
                 )}
                 <div className="pdf-controls">
-                  <button
-                    onClick={handleRotatePage}
-                    className="rotate-button"
-                    title="Rotate page 90° clockwise"
-                  >
-                    ↻ Rotate
-                  </button>
+                  <div className="rotate-buttons">
+                    <button
+                      onClick={() => handleRotatePage(-90)}
+                      className="rotate-button rotate-ccw"
+                      title="Rotate 90° counter-clockwise"
+                    >
+                      ↺
+                    </button>
+                    <button
+                      onClick={() => handleRotatePage(90)}
+                      className="rotate-button rotate-cw"
+                      title="Rotate 90° clockwise"
+                    >
+                      ↻
+                    </button>
+                  </div>
                   {currentGroupId && currentGroup && (
                     <>
                       {effectivePages.includes(currentPage) ? (
@@ -393,16 +476,64 @@ function App() {
                   <li
                     key={group.groupId}
                     className={`group-item ${group.groupId === currentGroupId ? 'active' : ''} ${group.kind === 'user-created' ? 'user-created' : ''}`}
-                    onClick={() => setCurrentGroupId(group.groupId)}
                   >
-                    <div className="group-item-content">
-                      <span className="group-label">
-                        {group.label}
-                        {group.kind === 'user-created' && <span className="user-badge">★</span>}
-                      </span>
-                      <span className="group-meta">
-                        {getAdjustedOccurrenceCount(group)} occurrences
-                      </span>
+                    <div className="group-item-content" onClick={() => setCurrentGroupId(group.groupId)}>
+                      {editingGroupId === group.groupId ? (
+                        <input
+                          type="text"
+                          className="group-rename-input"
+                          defaultValue={group.label}
+                          autoFocus
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              handleRenameGroup(group.groupId, e.currentTarget.value);
+                            } else if (e.key === 'Escape') {
+                              setEditingGroupId(null);
+                            }
+                          }}
+                          onBlur={(e) => {
+                            if (e.currentTarget.value.trim()) {
+                              handleRenameGroup(group.groupId, e.currentTarget.value);
+                            } else {
+                              setEditingGroupId(null);
+                            }
+                          }}
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      ) : (
+                        <>
+                          <span className="group-label">
+                            {group.label}
+                            {group.kind === 'user-created' && <span className="user-badge">★</span>}
+                          </span>
+                          <span className="group-meta">
+                            {getAdjustedOccurrenceCount(group)} occurrences
+                          </span>
+                        </>
+                      )}
+                    </div>
+                    <div className="group-actions" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        className="group-action-btn"
+                        title="Rename group"
+                        onClick={() => setEditingGroupId(group.groupId)}
+                      >
+                        ✏️
+                      </button>
+                      <button
+                        className="group-action-btn"
+                        title="Combine with another group"
+                        onClick={() => setCombiningGroupId(group.groupId)}
+                      >
+                        🔗
+                      </button>
+                      <button
+                        className="group-action-btn delete"
+                        title="Delete group"
+                        onClick={() => handleDeleteGroup(group.groupId)}
+                      >
+                        🗑️
+                      </button>
                     </div>
                   </li>
                 ))}
@@ -458,6 +589,44 @@ function App() {
           </div>
         </div>
       </main>
+
+      {/* Combine Groups Modal */}
+      {combiningGroupId && (
+        <div className="modal-overlay" onClick={() => setCombiningGroupId(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Combine "{allGroups.find(g => g.groupId === combiningGroupId)?.label}" into:</h3>
+              <button
+                className="modal-close-btn"
+                onClick={() => setCombiningGroupId(null)}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="modal-body">
+              <div className="combine-options-list">
+                {allGroups
+                  .filter(g => g.groupId !== combiningGroupId)
+                  .map(targetGroup => (
+                    <button
+                      key={targetGroup.groupId}
+                      className="combine-option"
+                      onClick={() => {
+                        handleCombineGroups(combiningGroupId, targetGroup.groupId);
+                        setCombiningGroupId(null);
+                      }}
+                    >
+                      <span className="combine-option-label">{targetGroup.label}</span>
+                      <span className="combine-option-meta">
+                        {getEffectivePagesForGroup(targetGroup, pageEdits[targetGroup.groupId], analysis?.pageCount ?? null).length} pages
+                      </span>
+                    </button>
+                  ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

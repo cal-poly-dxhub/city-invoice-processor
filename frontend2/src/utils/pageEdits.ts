@@ -115,19 +115,13 @@ export function getHighlightsByPage(
   }
 
   // Populate highlights from occurrences
-  const isOrphaned = group.kind === 'orphaned';
-
   for (const occurrence of group.occurrences) {
     const page = occurrence.pageNumber;
 
     // Only include highlights for pages in effectivePages
     if (effectivePages.includes(page)) {
-      // Add all coordinate rectangles for this occurrence, marking orphaned status
-      const coordsWithOrphanedFlag = occurrence.coords.map(coord => ({
-        ...coord,
-        isOrphaned
-      }));
-      highlightsByPage[page].push(...coordsWithOrphanedFlag);
+      // Add all coordinate rectangles for this occurrence
+      highlightsByPage[page].push(...occurrence.coords);
     }
   }
 
