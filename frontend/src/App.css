@@ -36,6 +36,12 @@
   background: #535ac8;
 }
 
+.header-buttons {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+}
+
 .app-main {
   display: flex;
   flex-direction: column;
@@ -264,6 +270,30 @@
   margin: 0 0 1rem 0;
   color: #646cff;
   font-size: 1.2rem;
+}
+
+.reconcile-button {
+  background: #646cff;
+  color: white;
+  border: none;
+  padding: 0.75rem 1.5rem;
+  border-radius: 6px;
+  font-size: 1rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  white-space: nowrap;
+}
+
+.reconcile-button:hover {
+  background: #535ac8;
+}
+
+.reconcile-button:active {
+  transform: translateY(0);
 }
 
 .groups-list {

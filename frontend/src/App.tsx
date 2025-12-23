@@ -16,6 +16,16 @@ import {
   getUnassignedPages,
 } from './utils/pageEdits';
 
+// Simplified data structure for reconciliation (passed to next LLM stage)
+interface ReconciledGroupings {
+  pdfName: string;
+  groups: Array<{
+    label: string;
+    pages: number[];  // sorted page numbers
+  }>;
+  unassignedPages?: number[];  // pages not assigned to any group
+}
+
 function App() {
   // Top-level state
   const [analysis, setAnalysis] = useState<DocumentAnalysis | null>(null);
@@ -301,6 +311,52 @@ function App() {
     setCurrentGroupId(targetGroupId);
   };
 
+  // Compute reconciled groupings (simplified for LLM consumption)
+  const computeReconciledGroupings = (): ReconciledGroupings => {
+    const groups = allGroups.map(group => {
+      const pages = getEffectivePagesForGroup(group, pageEdits[group.groupId], analysis?.pageCount ?? null);
+      return {
+        label: group.label,
+        pages: pages.sort((a, b) => a - b),  // sorted ascending
+      };
+    });
+
+    const result: ReconciledGroupings = {
+      pdfName: pdfFile?.name || 'sample.pdf',
+      groups,
+    };
+
+    // Add unassigned pages as a separate field if there are any
+    if (unassignedPages.length > 0) {
+      result.unassignedPages = [...unassignedPages].sort((a, b) => a - b);
+    }
+
+    return result;
+  };
+
+  // Handle reconcile action - download JSON with corrected groupings
+  const handleReconcile = () => {
+    const reconciled = computeReconciledGroupings();
+
+    // Create JSON blob and download
+    const jsonString = JSON.stringify(reconciled, null, 2);
+    const blob = new Blob([jsonString], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+
+    // Create temporary download link
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${reconciled.pdfName.replace('.pdf', '')}-reconciled.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    // Clean up
+    URL.revokeObjectURL(url);
+
+    console.log('Reconciled groupings:', reconciled);
+  };
+
   // When group changes, jump to first page with highlights
   useEffect(() => {
     if (pagesToShow.length > 0) {
@@ -355,9 +411,18 @@ function App() {
     <div className="app">
       <header className="app-header">
         <h1>Document Analysis Viewer</h1>
-        <button onClick={handleLoadTestPDF} className="load-pdf-button">
-          {pageCount > 0 ? 'Change PDF' : 'Load PDF'}
-        </button>
+        <div className="header-buttons">
+          <button onClick={handleLoadTestPDF} className="load-pdf-button">
+            {pageCount > 0 ? 'Change PDF' : 'Load PDF'}
+          </button>
+          <button
+            className="reconcile-button"
+            onClick={handleReconcile}
+            title="Export corrected groupings for reconciliation"
+          >
+            📊 Reconcile
+          </button>
+        </div>
       </header>
 
       <main className="app-main">
