@@ -48,6 +48,11 @@ For the document images provided, perform these tasks:
    - Check if amounts are referenced consistently across pages
    - Flag any discrepancies you find
 
+   TIMESHEET VERIFICATION:
+   - If multiple timesheet pages exist for a pay period, sum ALL hours across all timesheet pages for that date range
+   - Compare the total timesheet hours to the hours shown on the corresponding pay stub or summary page
+   - Report any differences between the timesheet total and pay stub hours
+
 3. OUTPUT as JSON (IMPORTANT: valid JSON only, no trailing commas):
 {
   "extracted_numbers": [
@@ -61,6 +66,11 @@ For the document images provided, perform these tasks:
   ],
   "confidence": 85
 }
+
+CRITICAL: "expected" and "actual" MUST be numbers, NOT expressions:
+- CORRECT: "actual": 1537.50
+- WRONG: "actual": 61.50 * 25.00
+- Put calculations in "description", not in "expected" or "actual" fields
 
 CRITICAL JSON FORMATTING RULES:
 - Return ONLY valid JSON, nothing else
