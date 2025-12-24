@@ -21,7 +21,10 @@ interface ReconciledGroupings {
   pdfName: string;
   groups: Array<{
     label: string;
-    pages: number[];  // sorted page numbers
+    pages: Array<{
+      page: number;
+      type: 'summary' | 'supporting';
+    }>;
   }>;
   unassignedPages?: number[];  // pages not assigned to any group
 }
@@ -37,6 +40,9 @@ function App() {
 
   // Per-page rotation state (persists across page navigation)
   const [pageRotations, setPageRotations] = useState<Map<number, number>>(new Map());
+
+  // Page types - global per-page setting (default: 'supporting')
+  const [pageTypes, setPageTypes] = useState<Map<number, 'summary' | 'supporting'>>(new Map());
 
   // Page membership edits per group (user corrections overlay)
   const [pageEdits, setPageEdits] = useState<PageEditsState>({});
@@ -205,6 +211,20 @@ function App() {
     });
   };
 
+  // Handle changing page type (summary or supporting)
+  const handlePageTypeChange = (pageNumber: number, type: 'summary' | 'supporting') => {
+    setPageTypes(prev => {
+      const newMap = new Map(prev);
+      newMap.set(pageNumber, type);
+      return newMap;
+    });
+  };
+
+  // Get page type (default to 'supporting' if not set)
+  const getPageType = (pageNumber: number): 'summary' | 'supporting' => {
+    return pageTypes.get(pageNumber) ?? 'supporting';
+  };
+
   // Handle assigning an unassigned page to an existing group
   const handleAssignToGroup = (pageNumber: number, groupId: string) => {
     handleTogglePage(groupId, pageNumber, true);
@@ -314,10 +334,17 @@ function App() {
   // Compute reconciled groupings (simplified for LLM consumption)
   const computeReconciledGroupings = (): ReconciledGroupings => {
     const groups = allGroups.map(group => {
-      const pages = getEffectivePagesForGroup(group, pageEdits[group.groupId], analysis?.pageCount ?? null);
+      const pageNumbers = getEffectivePagesForGroup(group, pageEdits[group.groupId], analysis?.pageCount ?? null);
+      const pagesWithTypes = pageNumbers
+        .sort((a, b) => a - b)  // sorted ascending
+        .map(pageNum => ({
+          page: pageNum,
+          type: getPageType(pageNum),
+        }));
+
       return {
         label: group.label,
-        pages: pages.sort((a, b) => a - b),  // sorted ascending
+        pages: pagesWithTypes,
       };
     });
 
@@ -490,20 +517,34 @@ function App() {
                       )}
                     </>
                   )}
+                  <div className="page-type-selector-container">
+                    <label className="page-type-label">Page Type:</label>
+                    <select
+                      className="page-type-selector-topbar"
+                      value={getPageType(currentPage)}
+                      onChange={(e) => handlePageTypeChange(currentPage, e.target.value as 'summary' | 'supporting')}
+                      title="Set page type for reconciliation"
+                    >
+                      <option value="supporting">Supporting</option>
+                      <option value="summary">Summary</option>
+                    </select>
+                  </div>
                   <button
                     onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
                     disabled={currentPage <= 1}
+                    className="nav-arrow"
                   >
-                    Previous
+                    ←
                   </button>
                   <span className="page-indicator">
-                    Page {currentPage} of {pageCount}
+                    {currentPage}/{pageCount}
                   </span>
                   <button
                     onClick={() => setCurrentPage((p) => Math.min(pageCount, p + 1))}
                     disabled={currentPage >= pageCount}
+                    className="nav-arrow"
                   >
-                    Next
+                    →
                   </button>
                   {pagesToShow.length > 0 && (
                     <div className="jump-to-pages">
@@ -631,6 +672,8 @@ function App() {
                         group={currentGroup}
                         groupEdits={currentGroupEdits}
                         onTogglePage={handleTogglePage}
+                        getPageType={getPageType}
+                        onPageTypeChange={handlePageTypeChange}
                       />
                     ) : (
                       <div className="no-group-message">

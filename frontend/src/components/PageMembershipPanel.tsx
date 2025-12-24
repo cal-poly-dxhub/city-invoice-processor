@@ -19,6 +19,8 @@ interface PageMembershipPanelProps {
   group: Group;
   groupEdits: GroupPageEdits | undefined;
   onTogglePage: (groupId: string, pageNumber: number, shouldInclude: boolean) => void;
+  getPageType: (pageNumber: number) => 'summary' | 'supporting';
+  onPageTypeChange: (pageNumber: number, type: 'summary' | 'supporting') => void;
 }
 
 export function PageMembershipPanel({
@@ -26,6 +28,8 @@ export function PageMembershipPanel({
   group,
   groupEdits,
   onTogglePage,
+  getPageType,
+  onPageTypeChange,
 }: PageMembershipPanelProps) {
   // Compute page lists
   const originalPages = getOriginalPagesForGroup(group);
@@ -64,6 +68,7 @@ export function PageMembershipPanel({
         {pagesToShow.map((pageNumber) => {
           const isChecked = effectivePages.includes(pageNumber);
           const status = getPageStatus(group, pageNumber, groupEdits);
+          const pageType = getPageType(pageNumber);
 
           return (
             <div key={pageNumber} className="page-item">
@@ -83,6 +88,16 @@ export function PageMembershipPanel({
                   </span>
                 )}
               </label>
+
+              <select
+                className="page-type-selector"
+                value={pageType}
+                onChange={(e) => onPageTypeChange(pageNumber, e.target.value as 'summary' | 'supporting')}
+                title="Page type for reconciliation"
+              >
+                <option value="supporting">Supporting</option>
+                <option value="summary">Summary</option>
+              </select>
             </div>
           );
         })}

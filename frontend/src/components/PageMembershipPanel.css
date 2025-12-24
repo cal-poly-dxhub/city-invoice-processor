@@ -30,6 +30,9 @@
 .page-item {
   padding: 0.5rem;
   border-bottom: 1px solid #f0f0f0;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
 }
 
 .page-item:last-child {
@@ -42,6 +45,7 @@
   gap: 0.5rem;
   cursor: pointer;
   user-select: none;
+  flex: 1;
 }
 
 .page-checkbox-label input[type="checkbox"] {
@@ -105,4 +109,26 @@
 .summary-removed {
   color: #f56565;
   font-weight: 600;
+}
+
+.page-type-selector {
+  padding: 0.25rem 0.5rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  background: white;
+  color: #333;
+  cursor: pointer;
+  transition: border-color 0.2s;
+  min-width: 100px;
+}
+
+.page-type-selector:hover {
+  border-color: #646cff;
+}
+
+.page-type-selector:focus {
+  outline: none;
+  border-color: #646cff;
+  box-shadow: 0 0 0 2px rgba(100, 108, 255, 0.1);
 }

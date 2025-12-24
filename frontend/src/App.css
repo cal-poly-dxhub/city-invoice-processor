@@ -149,11 +149,58 @@
   background: #e53e3e;
 }
 
+.page-type-selector-container {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-right: 1rem;
+  padding: 0.5rem 0.75rem;
+  background: rgba(100, 108, 255, 0.05);
+  border-radius: 6px;
+  border: 1px solid rgba(100, 108, 255, 0.2);
+}
+
+.page-type-label {
+  font-size: 0.9rem;
+  color: #555;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.page-type-selector-topbar {
+  padding: 0.4rem 0.6rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  background: white;
+  color: #333;
+  cursor: pointer;
+  transition: all 0.2s;
+  min-width: 110px;
+}
+
+.page-type-selector-topbar:hover {
+  border-color: #646cff;
+}
+
+.page-type-selector-topbar:focus {
+  outline: none;
+  border-color: #646cff;
+  box-shadow: 0 0 0 2px rgba(100, 108, 255, 0.15);
+}
+
 .page-indicator {
   font-weight: 500;
   color: #333;
-  min-width: 120px;
+  min-width: 60px;
   text-align: center;
+  font-size: 0.95rem;
+}
+
+.pdf-controls .nav-arrow {
+  font-size: 1.2rem;
+  padding: 0.5rem 0.75rem;
+  min-width: 40px;
 }
 
 .group-info {
