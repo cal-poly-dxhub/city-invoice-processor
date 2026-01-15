@@ -2,6 +2,7 @@ import json
 import os
 import base64
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -1483,7 +1484,6 @@ def _parse_date(date_str: str) -> Optional[datetime]:
     if not date_str:
         return None
 
-    from datetime import datetime
     date_str = str(date_str).strip()
 
     for fmt in ["%m/%d/%Y", "%Y-%m-%d", "%m/%d/%y", "%Y/%m/%d"]:
@@ -1492,6 +1492,58 @@ def _parse_date(date_str: str) -> Optional[datetime]:
         except:
             pass
     return None
+
+
+def _extract_invoice_amounts(obj: Dict) -> List[float]:
+    """
+    Extract invoice/bill amounts from entity objects.
+    Returns list of amounts found in the entity.
+
+    Handles various formats:
+    - {amount: 123.45}
+    - {total: 123.45}
+    - {invoice_amount: 123.45}
+    - {balance_due: 123.45}
+    - {charges: [...]} arrays
+    """
+    amounts = []
+
+    if not isinstance(obj, dict):
+        return amounts
+
+    # Common amount field names (prioritize more specific ones)
+    amount_fields = [
+        "amount",
+        "total",
+        "total_amount",
+        "invoice_amount",
+        "invoice_total",
+        "balance_due",
+        "amount_due",
+        "total_charges",
+        "grand_total",
+        "subtotal",
+    ]
+
+    for field in amount_fields:
+        if field in obj and obj[field] is not None:
+            try:
+                amount = float(obj[field])
+                if amount > 0:  # Only include positive amounts
+                    amounts.append(amount)
+                    return amounts  # Return first valid amount found
+            except (ValueError, TypeError):
+                pass
+
+    # Check for arrays of charges/line items
+    for field in ["charges", "line_items", "items", "services"]:
+        if field in obj and isinstance(obj[field], list):
+            for item in obj[field]:
+                if isinstance(item, dict):
+                    item_amounts = _extract_invoice_amounts(item)
+                    amounts.extend(item_amounts)
+
+    return amounts
 
 
 def _extract_pay_records(obj: Dict) -> List[Dict]:
@@ -1590,7 +1642,6 @@ def _generate_reconciliation_report(
             "line_items": [detailed status for each line item]
         }
     """
-    from datetime import datetime
     from collections import defaultdict
 
     groups = document_analysis.get("groups", [])
@@ -1660,9 +1711,26 @@ def _generate_reconciliation_report(
                 result["issues"].append("No pay records found for reporting period")
                 missing_data += 1
             else:
+                # HIERARCHY OF TRUST:
+                # 1. If paystubs exist (most authoritative): Use ONLY paystubs
+                # 2. If no paystubs: Sum all unique detail rows from summary pages
+
+                paystub_records = [r for r in period_records if r["source_type"] == "paystub"]
+                summary_records = [r for r in period_records if r["source_type"] in ("summary", "pay_period")]
+
+                # Decide which records to use
+                if paystub_records:
+                    # Use only paystubs (most reliable)
+                    records_to_use = paystub_records
+                    result["reconciliation_method"] = "paystubs_only"
+                else:
+                    # Use summary/pay_period records
+                    records_to_use = summary_records
+                    result["reconciliation_method"] = "summary_pages"
+
                 # Group by date and check for inconsistencies
                 by_date = defaultdict(list)
-                for record in period_records:
+                for record in records_to_use:
                     by_date[record["date_str"]].append(record)
 
                 # Deduplicate and validate
@@ -1699,26 +1767,28 @@ def _generate_reconciliation_report(
 
                         date_detail["representations"].append(rep)
 
-                    # Check for inconsistent amounts
+                    # Check for inconsistent amounts across representations
                     if len(amounts) > 1:
                         date_detail["inconsistent"] = True
                         result["issues"].append(f"Date {date_str}: inconsistent amounts across representations: {sorted(amounts)}")
-
-                        # Use paystub if available, else first amount
-                        paystub_amounts = [r["amount"] for r in records if r["source_type"] == "paystub"]
-                        validated_amounts.append(paystub_amounts[0] if paystub_amounts else min(amounts))
+                        # Take the first amount (they should be consistent, but if not, flag it)
+                        validated_amounts.append(list(amounts)[0])
                     else:
                         validated_amounts.append(list(amounts)[0])
 
                     date_details.append(date_detail)
 
-                # Calculate total
+                # Calculate total from our summing (don't trust LLM math)
                 total_pdf = sum(validated_amounts)
                 diff = abs(csv_amount - total_pdf)
 
                 result["pdf_amount"] = total_pdf
                 result["difference"] = diff
                 result["date_details"] = date_details
+
+                # Note if we had to fall back to summary pages
+                if not paystub_records:
+                    result["issues"].append("Note: Using summary pages (no paystubs found)")
 
                 if diff < 0.02 and not result["issues"]:
                     result["status"] = "match"
@@ -1732,9 +1802,8 @@ def _generate_reconciliation_report(
                     amount_mismatches += 1
 
         else:
-            # For non-SALARY items: just check if supporting pages exist
+            # For non-SALARY items: extract invoice amounts and validate
             supporting_pages = group.get("supportingPages", [])
-
             result["supporting_pages"] = supporting_pages
             result["supporting_page_count"] = len(supporting_pages)
 
@@ -1743,8 +1812,48 @@ def _generate_reconciliation_report(
                 result["issues"].append("No supporting pages found")
                 missing_data += 1
             else:
-                result["status"] = "has_support"
-                result["pdf_amount"] = None  # Can't extract amounts from non-salary items
+                # Extract amounts from matched entity objects
+                meta = group.get("meta", {})
+                matched_objects = meta.get("matched_entity_objects", [])
+
+                all_amounts = []
+                amount_details = []
+
+                for obj in matched_objects:
+                    if isinstance(obj, dict):
+                        page_num = obj.get("page_number", "?")
+                        amounts = _extract_invoice_amounts(obj)
+
+                        for amount in amounts:
+                            all_amounts.append(amount)
+                            amount_details.append({
+                                "page": page_num,
+                                "amount": amount,
+                                "vendor": obj.get("name") or obj.get("vendor") or obj.get("company")
+                            })
+
+                if all_amounts:
+                    total_pdf = sum(all_amounts)
+                    diff = abs(csv_amount - total_pdf)
+
+                    result["pdf_amount"] = total_pdf
+                    result["difference"] = diff
+                    result["amount_details"] = amount_details
+
+                    if diff < 0.02:
+                        result["status"] = "match"
+                        perfect_matches += 1
+                    else:
+                        result["status"] = "amount_mismatch"
+                        result["issues"].append(
+                            f"Amount mismatch: CSV ${csv_amount:.2f} vs PDF ${total_pdf:.2f} (diff: ${diff:.2f})"
+                        )
+                        amount_mismatches += 1
+                else:
+                    # Supporting pages found but no amounts extracted
+                    result["status"] = "has_support"
+                    result["pdf_amount"] = None
+                    result["issues"].append("Supporting pages found but no invoice amounts extracted")
 
         line_item_results.append(result)
 
@@ -2013,6 +2122,18 @@ def _csv_to_document_analysis_multi_pdf(
                 # Non-SALARY: Use pages directly from Stage 3 match
                 category_pages = match.get("matched_group_pages", [])
 
+                # Extract entity objects from those pages for amount validation
+                for page_num in category_pages:
+                    for page_output in stage1_outputs:
+                        if page_output.get("page_number") == page_num:
+                            page_entities = page_output.get("entities", [])
+                            for entity in page_entities:
+                                if isinstance(entity, dict):
+                                    entity_with_page = entity.copy()
+                                    entity_with_page["page_number"] = page_num
+                                    matched_entity_objects.append(entity_with_page)
+                            break
+
             # Apply page offset to translate to global page numbers
             global_pages = [p + page_offset for p in category_pages]
             global_pages = sorted(set(global_pages))  # Remove duplicates and sort
@@ -2250,6 +2371,10 @@ def _handle_multi_pdf_csv_mode(event, context):
             },
             "csv_matches_by_category": all_csv_matches,
             "pdf_categories_processed": list(pdf_results.keys()),
+            "stage1_outputs_by_category": {
+                category: result["stage1_outputs"]
+                for category, result in pdf_results.items()
+            },
             "model_id": model_id,
         }
     }
