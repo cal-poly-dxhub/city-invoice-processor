@@ -2,6 +2,8 @@
 
 import logging
 import re
+from decimal import Decimal
+from itertools import combinations
 from typing import Dict, List, Optional, Set, Tuple
 from rapidfuzz import fuzz
 from invoice_recon.budget_items import is_employee_budget_item
@@ -198,6 +200,239 @@ def get_expected_doc_types(budget_item: str) -> Set[str]:
     return mapping.get(budget_item, {"invoice", "receipt", "other"})
 
 
+def score_page_by_amount(
+    line_item: LineItem,
+    page: PageRecord,
+    tolerance: float = 0.01,
+) -> Tuple[float, List[str]]:
+    """
+    Score a page by amount matching.
+
+    Checks if the page contains amounts that match or sum to the line item amount.
+
+    Args:
+        line_item: Line item to match
+        page: Page to score
+        tolerance: Tolerance for amount matching (default $0.01)
+
+    Returns:
+        Tuple of (score, rationale)
+    """
+    score = 0.0
+    rationale = []
+
+    # Skip if line item has no amount
+    if not line_item.amount:
+        return (0.0, ["No amount in line item"])
+
+    target_amount = float(line_item.amount)
+
+    # Extract amounts from page entities
+    page_amounts = page.entities.get("amounts", [])
+    if not page_amounts:
+        return (0.0, ["No amounts extracted from page"])
+
+    # Build list of numeric amounts with their context
+    amounts_with_context = []
+    for amt_obj in page_amounts:
+        amt_value = amt_obj.get("value")
+        if amt_value is not None:
+            try:
+                amounts_with_context.append({
+                    "value": float(amt_value),
+                    "raw": amt_obj.get("raw", ""),
+                    "context": amt_obj.get("context", "")[:50],
+                })
+            except (ValueError, TypeError):
+                continue
+
+    if not amounts_with_context:
+        return (0.0, ["No valid amounts on page"])
+
+    # Strategy 1: Exact match (single amount equals target)
+    for amt in amounts_with_context:
+        if abs(amt["value"] - target_amount) < tolerance:
+            score = 0.95
+            rationale.append(f"Exact amount match: ${amt['value']:.2f}")
+            rationale.append(f"Context: {amt['context']}")
+            return (score, rationale)
+
+    # Strategy 2: Component match (2-4 amounts sum to target)
+    # Only try if we have multiple amounts and target is reasonable
+    if len(amounts_with_context) >= 2 and target_amount < 10000:
+        # Try combinations of 2-4 amounts
+        for combo_size in [2, 3, 4]:
+            if combo_size > len(amounts_with_context):
+                continue
+
+            for combo in combinations(amounts_with_context, combo_size):
+                combo_sum = sum(amt["value"] for amt in combo)
+                if abs(combo_sum - target_amount) < tolerance:
+                    score = 0.85
+                    combo_values = [f"${amt['value']:.2f}" for amt in combo]
+                    rationale.append(
+                        f"Component match: {' + '.join(combo_values)} = ${combo_sum:.2f}"
+                    )
+                    rationale.append("Multiple amounts sum to target")
+                    return (score, rationale)
+
+    # Strategy 3: Partial match (amount is close but not exact)
+    for amt in amounts_with_context:
+        # Within 10% of target
+        if target_amount > 0 and abs(amt["value"] - target_amount) / target_amount < 0.10:
+            score = 0.50
+            diff = amt["value"] - target_amount
+            rationale.append(
+                f"Close amount: ${amt['value']:.2f} (diff: ${diff:+.2f})"
+            )
+            return (score, rationale)
+
+    return (0.0, ["No amount matches found"])
+
+
+def generate_amount_based_candidates(
+    line_item: LineItem,
+    pages: List[PageRecord],
+) -> List[CandidateEvidenceSet]:
+    """
+    Generate candidates based on amount matching.
+
+    Args:
+        line_item: Line item to match
+        pages: Pages from the relevant budget item PDF
+
+    Returns:
+        List of amount-based candidate evidence sets
+    """
+    if not line_item.amount or not pages:
+        return []
+
+    # Score all pages by amount
+    page_scores = []
+    for page in pages:
+        score, rationale = score_page_by_amount(line_item, page)
+        if score > 0:
+            page_scores.append((page, score, rationale))
+
+    if not page_scores:
+        return []
+
+    # Sort by score descending
+    page_scores.sort(key=lambda x: x[1], reverse=True)
+
+    candidates = []
+
+    # Return only the top scoring page with the best amount match
+    # Component matches already capture all amounts from the same page
+    if page_scores:
+        best_page, best_score, best_rationale = page_scores[0]
+        candidates.append(
+            CandidateEvidenceSet(
+                doc_id=pages[0].doc_id,
+                page_numbers=[best_page.page_number],
+                score=best_score,
+                rationale=["Amount-based match"] + best_rationale,
+                evidence_snippets=[],
+            )
+        )
+
+    return candidates
+
+
+def generate_cross_page_component_candidates(
+    line_item: LineItem,
+    pages: List[PageRecord],
+    tolerance: float = 0.01,
+    max_pages_in_combo: int = 4,
+) -> List[CandidateEvidenceSet]:
+    """
+    Generate candidates by finding amounts across multiple pages that sum to target.
+
+    This is a fallback strategy when same-page component matching doesn't work.
+    Looks for combinations of 2-4 pages where each page has at least one amount,
+    and those amounts sum to the target.
+
+    Args:
+        line_item: Line item to match
+        pages: Pages from the relevant budget item PDF
+        tolerance: Tolerance for amount matching (default $0.01)
+        max_pages_in_combo: Maximum pages to combine (default 4)
+
+    Returns:
+        List of cross-page component candidates
+    """
+    if not line_item.amount or not pages:
+        return []
+
+    target_amount = float(line_item.amount)
+
+    # Extract the best (largest) amount from each page
+    page_amounts = []
+    for page in pages:
+        amounts = page.entities.get("amounts", [])
+        if not amounts:
+            continue
+
+        # Get the largest amount on this page (often the most relevant)
+        valid_amounts = []
+        for amt_obj in amounts:
+            amt_value = amt_obj.get("value")
+            if amt_value is not None:
+                try:
+                    valid_amounts.append({
+                        "page": page,
+                        "value": float(amt_value),
+                        "raw": amt_obj.get("raw", ""),
+                        "context": amt_obj.get("context", "")[:50],
+                    })
+                except (ValueError, TypeError):
+                    continue
+
+        if valid_amounts:
+            # Take the largest amount from this page
+            largest = max(valid_amounts, key=lambda x: x["value"])
+            page_amounts.append(largest)
+
+    if len(page_amounts) < 2:
+        # Need at least 2 pages to do cross-page matching
+        return []
+
+    # Try combinations of 2-4 pages
+    candidates = []
+    for combo_size in [2, 3, 4]:
+        if combo_size > len(page_amounts) or combo_size > max_pages_in_combo:
+            continue
+
+        for combo in combinations(page_amounts, combo_size):
+            combo_sum = sum(amt["value"] for amt in combo)
+            if abs(combo_sum - target_amount) < tolerance:
+                # Found a cross-page component match!
+                combo_pages = sorted(set(amt["page"].page_number for amt in combo))
+                combo_values = [f"${amt['value']:.2f}" for amt in combo]
+                page_refs = [f"p{amt['page'].page_number}" for amt in combo]
+
+                rationale = [
+                    "Cross-page component match",
+                    f"Amounts across pages: {' + '.join(f'{v} ({p})' for v, p in zip(combo_values, page_refs))} = ${combo_sum:.2f}",
+                    "Multiple pages contain amounts that sum to target"
+                ]
+
+                candidates.append(
+                    CandidateEvidenceSet(
+                        doc_id=pages[0].doc_id,
+                        page_numbers=combo_pages,
+                        score=0.80,  # Slightly lower than same-page component (0.85)
+                        rationale=rationale,
+                        evidence_snippets=[],
+                    )
+                )
+
+                # Return first match found (avoid combinatorial explosion)
+                return candidates
+
+    return []
+
+
 def generate_candidates_for_line_item(
     line_item: LineItem,
     pages: List[PageRecord],
@@ -219,10 +454,55 @@ def generate_candidates_for_line_item(
     if not pages:
         return []
 
+    # Skip matching for line items with $0 amount (no transaction to verify)
+    if line_item.amount is not None and line_item.amount == 0:
+        logger.debug(f"Row {line_item.row_index}: Skipping match (amount is $0)")
+        return []
+
     # Determine if employee-based matching
     is_employee = is_employee_budget_item(line_item.budget_item)
 
-    # Score all pages
+    # Build candidate sets
+    candidates = []
+
+    # For non-employee items with amounts, try amount-based matching FIRST
+    if not is_employee and line_item.amount:
+        amount_candidates = generate_amount_based_candidates(line_item, pages)
+
+        # If we found high-quality amount matches (score >= 0.80), prioritize them
+        if amount_candidates and amount_candidates[0].score >= 0.80:
+            logger.info(
+                f"Row {line_item.row_index}: Found high-quality amount match "
+                f"(score={amount_candidates[0].score:.2f}, pages={amount_candidates[0].page_numbers})"
+            )
+            # Add amount-based candidates at the front
+            candidates.extend(amount_candidates)
+        else:
+            # No high-quality same-page match found, try cross-page component matching
+            logger.debug(
+                f"Row {line_item.row_index}: No high-quality same-page match, "
+                "trying cross-page component matching"
+            )
+            cross_page_candidates = generate_cross_page_component_candidates(line_item, pages)
+
+            if cross_page_candidates:
+                logger.info(
+                    f"Row {line_item.row_index}: Found cross-page component match "
+                    f"(score={cross_page_candidates[0].score:.2f}, pages={cross_page_candidates[0].page_numbers})"
+                )
+                candidates.extend(cross_page_candidates)
+                # Also add the partial same-page match if it exists
+                if amount_candidates:
+                    candidates.extend(amount_candidates)
+            elif amount_candidates:
+                # Add lower-scoring amount matches but also generate keyword matches
+                candidates.extend(amount_candidates)
+                logger.debug(
+                    f"Row {line_item.row_index}: Found partial amount match, "
+                    "will also generate keyword-based candidates"
+                )
+
+    # Score all pages using traditional keyword/employee matching
     page_scores: List[Tuple[PageRecord, float, List[str]]] = []
     for page in pages:
         if is_employee and line_item.employee_last_name:
@@ -234,9 +514,6 @@ def generate_candidates_for_line_item(
 
     # Sort by score descending
     page_scores.sort(key=lambda x: x[1], reverse=True)
-
-    # Build candidate sets
-    candidates = []
 
     # Candidate 1: All strong matches (score >= 0.75)
     strong_matches = [p for p, s, r in page_scores if s >= 0.75]
