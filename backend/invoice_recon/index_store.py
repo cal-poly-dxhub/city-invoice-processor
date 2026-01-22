@@ -52,6 +52,7 @@ class IndexStore:
                 text TEXT NOT NULL,
                 entities_json TEXT NOT NULL,
                 entities_sha256 TEXT NOT NULL,
+                words_json TEXT,
                 PRIMARY KEY (doc_id, page_number)
             )
         """)
@@ -114,7 +115,7 @@ class IndexStore:
 
         cursor.execute(
             """
-            SELECT doc_id, page_number, text_source, text, entities_json
+            SELECT doc_id, page_number, text_source, text, entities_json, words_json
             FROM pages
             WHERE doc_id = ? AND page_number = ?
             """,
@@ -126,12 +127,14 @@ class IndexStore:
 
         if row:
             entities = json.loads(row[4])
+            words = json.loads(row[5]) if row[5] else []
             return PageRecord(
                 doc_id=row[0],
                 page_number=row[1],
                 text_source=row[2],
                 text=row[3],
                 entities=entities,
+                words=words,
             )
 
         return None
@@ -158,11 +161,13 @@ class IndexStore:
         text_source: str,
         text: str,
         entities: Dict[str, Any],
+        words: List[Dict[str, Any]] = None,
     ) -> None:
         """Insert or update page data."""
         text_sha256 = hashlib.sha256(text.encode("utf-8")).hexdigest()
         entities_json = json.dumps(entities, sort_keys=True)
         entities_sha256 = hashlib.sha256(entities_json.encode("utf-8")).hexdigest()
+        words_json = json.dumps(words, sort_keys=True) if words else None
 
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
@@ -170,8 +175,8 @@ class IndexStore:
         cursor.execute(
             """
             INSERT OR REPLACE INTO pages
-            (doc_id, page_number, text_source, text_sha256, text, entities_json, entities_sha256)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            (doc_id, page_number, text_source, text_sha256, text, entities_json, entities_sha256, words_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 doc_id,
@@ -181,6 +186,7 @@ class IndexStore:
                 text,
                 entities_json,
                 entities_sha256,
+                words_json,
             ),
         )
 

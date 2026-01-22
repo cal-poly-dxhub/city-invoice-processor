@@ -4,7 +4,7 @@ import logging
 import re
 from decimal import Decimal
 from itertools import combinations
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from rapidfuzz import fuzz
 from invoice_recon.budget_items import is_employee_budget_item
 from invoice_recon.models import (
@@ -42,6 +42,95 @@ def normalize_person_name(person: Dict) -> Tuple[str, str, str]:
     first_name = normalize_name(person.get("first_name", ""))
     last_name = normalize_name(person.get("last_name", ""))
     return (full_name, first_name, last_name)
+
+
+def find_word_boxes_for_terms(
+    page: PageRecord,
+    search_terms: List[str],
+) -> List[Dict[str, float]]:
+    """
+    Find word bounding boxes for search terms in a page.
+
+    Args:
+        page: Page with word boxes (from Textract)
+        search_terms: List of terms to search for (amounts, names, etc.)
+
+    Returns:
+        List of bounding boxes (normalized 0-1) that match the search terms
+    """
+    if not page.words or not search_terms:
+        return []
+
+    # Normalize search terms for matching
+    normalized_terms = [normalize_name(term) for term in search_terms]
+
+    matched_boxes = []
+    for word_obj in page.words:
+        word_text = word_obj.get("text", "")
+        word_normalized = normalize_name(word_text)
+
+        # Check if this word matches any search term
+        for term in normalized_terms:
+            if not term:
+                continue
+
+            # Exact match after normalization
+            if word_normalized == term:
+                matched_boxes.append({
+                    "left": word_obj.get("left", 0),
+                    "top": word_obj.get("top", 0),
+                    "width": word_obj.get("width", 0),
+                    "height": word_obj.get("height", 0),
+                })
+                break
+
+            # For amounts: allow flexible matching with punctuation removed
+            # Only use substring matching if the term contains digits (likely an amount)
+            if re.search(r'\d', term):
+                word_alphanum = re.sub(r'[^\w]', '', word_text.lower())
+                term_alphanum = re.sub(r'[^\w]', '', term.lower())
+
+                # Allow substring matching for amounts (e.g., "$1,234.56" contains "123456")
+                if word_alphanum and term_alphanum and (
+                    word_alphanum == term_alphanum or
+                    term_alphanum in word_alphanum or
+                    word_alphanum in term_alphanum
+                ):
+                    matched_boxes.append({
+                        "left": word_obj.get("left", 0),
+                        "top": word_obj.get("top", 0),
+                        "width": word_obj.get("width", 0),
+                        "height": word_obj.get("height", 0),
+                    })
+                    break
+
+    return matched_boxes
+
+
+def get_search_terms_for_line_item(line_item: LineItem) -> List[str]:
+    """
+    Extract search terms from a line item for highlighting.
+
+    Returns:
+        List of terms to search for (employee names, amount, key explanation words)
+    """
+    terms = []
+
+    # Add employee names if present
+    if line_item.employee_first_name:
+        terms.append(line_item.employee_first_name)
+    if line_item.employee_last_name:
+        terms.append(line_item.employee_last_name)
+    if line_item.employee_first_name and line_item.employee_last_name:
+        terms.append(f"{line_item.employee_first_name} {line_item.employee_last_name}")
+
+    # Add amount if present
+    if line_item.amount:
+        amount_str = str(line_item.amount)
+        terms.append(amount_str)
+        terms.append(f"${amount_str}")
+
+    return terms
 
 
 def score_page_for_employee(
@@ -326,6 +415,18 @@ def generate_amount_based_candidates(
     # Component matches already capture all amounts from the same page
     if page_scores:
         best_page, best_score, best_rationale = page_scores[0]
+
+        # Find word boxes for the amount
+        amount_str = str(line_item.amount)
+        search_terms = [
+            amount_str,
+            f"${amount_str}",
+            amount_str.replace(".", ""),  # For "1234" matching "$12.34"
+        ]
+        highlights = {
+            best_page.page_number: find_word_boxes_for_terms(best_page, search_terms)
+        }
+
         candidates.append(
             CandidateEvidenceSet(
                 doc_id=pages[0].doc_id,
@@ -333,6 +434,7 @@ def generate_amount_based_candidates(
                 score=best_score,
                 rationale=["Amount-based match"] + best_rationale,
                 evidence_snippets=[],
+                highlights=highlights,
             )
         )
 
@@ -417,6 +519,16 @@ def generate_cross_page_component_candidates(
                     "Multiple pages contain amounts that sum to target"
                 ]
 
+                # Find highlights for each page's amount
+                highlights = {}
+                for amt in combo:
+                    page_num = amt["page"].page_number
+                    amt_str = str(amt["value"])
+                    search_terms = [amt_str, f"${amt_str}", amt["raw"]]
+                    boxes = find_word_boxes_for_terms(amt["page"], search_terms)
+                    if boxes:
+                        highlights[page_num] = boxes
+
                 candidates.append(
                     CandidateEvidenceSet(
                         doc_id=pages[0].doc_id,
@@ -424,6 +536,7 @@ def generate_cross_page_component_candidates(
                         score=0.80,  # Slightly lower than same-page component (0.85)
                         rationale=rationale,
                         evidence_snippets=[],
+                        highlights=highlights,
                     )
                 )
 
@@ -520,6 +633,15 @@ def generate_candidates_for_line_item(
     if strong_matches:
         total_score = sum(s for p, s, r in page_scores if s >= 0.75)
         rationale_combined = ["Strong matches (score >= 0.75)"]
+
+        # Find highlights for strong matches
+        search_terms = get_search_terms_for_line_item(line_item)
+        highlights = {}
+        for page in strong_matches:
+            boxes = find_word_boxes_for_terms(page, search_terms)
+            if boxes:
+                highlights[page.page_number] = boxes
+
         candidates.append(
             CandidateEvidenceSet(
                 doc_id=pages[0].doc_id,
@@ -527,6 +649,7 @@ def generate_candidates_for_line_item(
                 score=total_score / len(strong_matches),
                 rationale=rationale_combined,
                 evidence_snippets=[],
+                highlights=highlights,
             )
         )
 
@@ -546,6 +669,17 @@ def generate_candidates_for_line_item(
         avg_score = sum(s for p, s, r in top_k if s > 0.0) / max(
             len([s for p, s, r in top_k if s > 0.0]), 1
         )
+
+        # Find highlights for top-K pages (not neighbors)
+        search_terms = get_search_terms_for_line_item(line_item)
+        highlights = {}
+        pages_by_number = {p.page_number: p for p in pages}
+        for page_num in neighbor_pages:
+            if page_num in pages_by_number:
+                boxes = find_word_boxes_for_terms(pages_by_number[page_num], search_terms)
+                if boxes:
+                    highlights[page_num] = boxes
+
         candidates.append(
             CandidateEvidenceSet(
                 doc_id=pages[0].doc_id,
@@ -553,6 +687,7 @@ def generate_candidates_for_line_item(
                 score=avg_score * 0.9,  # Slight penalty for including neighbors
                 rationale=[f"Top {top_k_neighbors} pages with neighbors"],
                 evidence_snippets=[],
+                highlights=highlights,
             )
         )
 
@@ -561,10 +696,22 @@ def generate_candidates_for_line_item(
         [(p.page_number, s) for p, s, r in page_scores if s > 0.0],
         max_gap=1,
     )
+    search_terms = get_search_terms_for_line_item(line_item)
+    pages_by_number = {p.page_number: p for p in pages}
+
     for cluster_pages in clusters[:3]:  # Top 3 clusters
         if cluster_pages:
             cluster_scores = [s for p, s, r in page_scores if p.page_number in cluster_pages]
             avg_score = sum(cluster_scores) / len(cluster_scores) if cluster_scores else 0.0
+
+            # Find highlights for cluster pages
+            highlights = {}
+            for page_num in cluster_pages:
+                if page_num in pages_by_number:
+                    boxes = find_word_boxes_for_terms(pages_by_number[page_num], search_terms)
+                    if boxes:
+                        highlights[page_num] = boxes
+
             candidates.append(
                 CandidateEvidenceSet(
                     doc_id=pages[0].doc_id,
@@ -572,6 +719,7 @@ def generate_candidates_for_line_item(
                     score=avg_score,
                     rationale=[f"Contiguous cluster of {len(cluster_pages)} pages"],
                     evidence_snippets=[],
+                    highlights=highlights,
                 )
             )
 

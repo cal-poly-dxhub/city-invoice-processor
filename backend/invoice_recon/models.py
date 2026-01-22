@@ -40,6 +40,7 @@ class PageRecord(BaseModel):
     text_source: str  # "pymupdf" or "textract"
     text: str
     entities: Dict[str, Any] = Field(default_factory=dict)
+    words: List[Dict[str, Any]] = Field(default_factory=list)  # Word bounding boxes from Textract
 
 
 class CandidateEvidenceSet(BaseModel):
@@ -50,6 +51,7 @@ class CandidateEvidenceSet(BaseModel):
     score: float
     rationale: List[str]
     evidence_snippets: List[str] = Field(default_factory=list)
+    highlights: Dict[int, List[Dict[str, float]]] = Field(default_factory=dict)  # page_number -> list of {left, top, width, height}
 
 
 class SelectedEvidence(BaseModel):

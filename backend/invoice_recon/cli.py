@@ -91,7 +91,7 @@ def index_document(
 
     # Process each page
     pages = []
-    for page_number, text, text_source in extracted_pages:
+    for page_number, text, text_source, word_boxes in extracted_pages:
         # Compute text hash
         text_sha256 = hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -108,7 +108,7 @@ def index_document(
         entities = extract_entities(text, budget_item, page_number)
 
         # Store in index
-        index_store.upsert_page(doc_id, page_number, text_source, text, entities)
+        index_store.upsert_page(doc_id, page_number, text_source, text, entities, word_boxes)
 
         # Create PageRecord
         page_record = PageRecord(
@@ -117,12 +117,13 @@ def index_document(
             text_source=text_source,
             text=text,
             entities=entities,
+            words=word_boxes,
         )
         pages.append(page_record)
 
     logger.info(
         f"Completed indexing {doc_id}: {len(pages)} pages "
-        f"({sum(1 for _, _, src in extracted_pages if src == 'textract')} via Textract)"
+        f"({sum(1 for _, _, src, _ in extracted_pages if src == 'textract')} via Textract)"
     )
 
     return (doc_ref, pages)

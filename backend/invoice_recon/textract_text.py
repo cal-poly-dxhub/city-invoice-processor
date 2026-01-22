@@ -1,7 +1,7 @@
 """AWS Textract text extraction."""
 
 import logging
-from typing import Optional
+from typing import Dict, List, Optional, Tuple
 import boto3
 from botocore.exceptions import ClientError
 from invoice_recon.config import Config
@@ -32,6 +32,22 @@ def extract_text_from_image_bytes(image_bytes: bytes) -> str:
     Returns:
         Extracted text (lines joined with newlines)
     """
+    text, _ = extract_text_and_words_from_image_bytes(image_bytes)
+    return text
+
+
+def extract_text_and_words_from_image_bytes(image_bytes: bytes) -> Tuple[str, List[Dict]]:
+    """
+    Extract text and word-level bounding boxes from image bytes using AWS Textract.
+
+    Args:
+        image_bytes: PNG image bytes
+
+    Returns:
+        Tuple of (text, word_boxes) where:
+        - text: Extracted text (lines joined with newlines)
+        - word_boxes: List of dicts with keys: text, left, top, width, height
+    """
     client = create_textract_client()
 
     try:
@@ -41,11 +57,13 @@ def extract_text_from_image_bytes(image_bytes: bytes) -> str:
         )
     except ClientError as e:
         logger.error(f"Textract API error: {e}")
-        return ""
+        return ("", [])
 
-    # Extract LINE blocks
+    blocks = response.get("Blocks", [])
+
+    # Extract LINE blocks for text
     lines = []
-    for block in response.get("Blocks", []):
+    for block in blocks:
         if block.get("BlockType") == "LINE":
             text = block.get("Text", "").strip()
             if text:
@@ -59,4 +77,24 @@ def extract_text_from_image_bytes(image_bytes: bytes) -> str:
                 )
                 break
 
-    return "\n".join(lines)
+    # Extract WORD blocks with bounding boxes
+    word_boxes = []
+    for block in blocks:
+        if block.get("BlockType") == "WORD":
+            text = block.get("Text", "").strip()
+            if not text:
+                continue
+
+            geometry = block.get("Geometry", {})
+            bbox = geometry.get("BoundingBox", {})
+
+            # Textract bounding boxes are normalized (0-1)
+            word_boxes.append({
+                "text": text,
+                "left": bbox.get("Left", 0),
+                "top": bbox.get("Top", 0),
+                "width": bbox.get("Width", 0),
+                "height": bbox.get("Height", 0),
+            })
+
+    return ("\n".join(lines), word_boxes)
