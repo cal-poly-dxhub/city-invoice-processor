@@ -61,9 +61,11 @@ def extract_page_text_and_words_pymupdf(page) -> Tuple[str, List[Dict]]:
         words = page.get_text("words")
 
         # Get page dimensions for normalization
-        page_rect = page.rect
-        page_width = page_rect.width
-        page_height = page_rect.height
+        # IMPORTANT: Use mediabox, not rect, because get_text("words") returns coordinates
+        # in the original (pre-rotation) coordinate space
+        mediabox = page.mediabox
+        page_width = mediabox.width
+        page_height = mediabox.height
 
         word_boxes = []
         for word_tuple in words:

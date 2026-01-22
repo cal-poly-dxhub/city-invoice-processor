@@ -246,6 +246,7 @@
   padding: 1rem 1.25rem;
   background: var(--color-bg);
   border-bottom: 1px solid var(--color-border);
+  gap: 1rem;
 }
 
 .page-number {
@@ -259,6 +260,37 @@
   font-family: var(--font-sans);
   font-size: 0.875rem;
   color: var(--color-text-secondary);
+  flex: 1;
+}
+
+.rotation-controls {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.rotation-btn {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 1.25rem;
+  color: var(--color-text);
+  transition: all 0.2s;
+}
+
+.rotation-btn:hover {
+  background: var(--color-accent);
+  color: white;
+  border-color: var(--color-accent);
+}
+
+.rotation-btn:active {
+  transform: scale(0.95);
 }
 
 .page-canvas-wrapper {
