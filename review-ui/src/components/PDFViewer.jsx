@@ -12,14 +12,26 @@ function PDFViewer({ item, documents, matchType }) {
   const [highlights, setHighlights] = useState({})
   const [selectedCandidateIdx, setSelectedCandidateIdx] = useState(0) // Track which candidate to display
   const [currentPageIdx, setCurrentPageIdx] = useState(0) // Track which page in the group is currently displayed
+  const [viewMode, setViewMode] = useState('group') // 'group' or 'all' - determines which pages to show
+  const [allPagesCurrentPage, setAllPagesCurrentPage] = useState(1) // Track current page when viewing all pages (1-indexed)
   const [pageRotations, setPageRotations] = useState({}) // Track user-applied rotation per page (0, 90, 180, 270)
   const [viewportDimensions, setViewportDimensions] = useState({}) // Store viewport dimensions for each page
+  const [userEditedCandidates, setUserEditedCandidates] = useState({}) // Track user modifications: { [candidateKey]: { ...candidate, page_numbers: [...], edited: true } }
   const pageInherentRotations = useRef({}) // Track PDF's inherent rotation
   const canvasRefs = useRef({})
   const containerRefs = useRef({})
 
+  // Helper to get current candidate (merged with user edits)
+  const getCurrentCandidate = () => {
+    const candidate = item.candidates?.[selectedCandidateIdx]
+    if (!candidate) return null
+
+    const candidateKey = `${item.row_id}_${selectedCandidateIdx}`
+    return userEditedCandidates[candidateKey] || candidate
+  }
+
   // Get doc and pages from the selected candidate (not selected_evidence)
-  const selectedCandidate = item.candidates?.[selectedCandidateIdx]
+  const selectedCandidate = getCurrentCandidate()
   const doc = selectedCandidate
     ? documents.find(d => d.doc_id === selectedCandidate.doc_id)
     : documents.find(d => d.doc_id === item.selected_evidence?.doc_id)
@@ -34,6 +46,8 @@ function PDFViewer({ item, documents, matchType }) {
     if (item.row_id) {
       setSelectedCandidateIdx(0)
       setCurrentPageIdx(0)
+      setViewMode('group')
+      setAllPagesCurrentPage(1)
     }
     loadPDF()
   }, [item.row_id])
@@ -44,10 +58,10 @@ function PDFViewer({ item, documents, matchType }) {
   }, [doc])
 
   useEffect(() => {
-    if (pdfDoc && pageNumbers.length > 0) {
+    if (pdfDoc) {
       renderPages()
     }
-  }, [pdfDoc, pageNumbers, pageRotations, currentPageIdx])
+  }, [pdfDoc, pageNumbers, pageRotations, currentPageIdx, viewMode, allPagesCurrentPage])
 
   // Re-render highlights when selected candidate changes
   useEffect(() => {
@@ -92,10 +106,17 @@ function PDFViewer({ item, documents, matchType }) {
   }
 
   const renderPages = async () => {
-    if (!pdfDoc || pageNumbers.length === 0) return
+    if (!pdfDoc) return
 
-    // Only render the current page in stack view
-    const pageNum = pageNumbers[currentPageIdx]
+    // Determine which page to render based on view mode
+    let pageNum
+    if (viewMode === 'group') {
+      if (pageNumbers.length === 0) return
+      pageNum = pageNumbers[currentPageIdx]
+    } else {
+      pageNum = allPagesCurrentPage
+    }
+
     const canvas = canvasRefs.current[pageNum]
     if (!canvas) return
 
@@ -144,7 +165,8 @@ function PDFViewer({ item, documents, matchType }) {
   }
 
   const getHighlightsFromCandidates = () => {
-    // Get highlights from the selected candidate
+    // Get highlights from the ORIGINAL candidate only
+    // User-added pages won't have highlights (they weren't matched)
     if (!item.candidates || item.candidates.length === 0) {
       console.log('PDFViewer: No candidates found')
       return {}
@@ -152,8 +174,8 @@ function PDFViewer({ item, documents, matchType }) {
 
     // Use selected candidate, or fallback to first if out of bounds
     const candidateIdx = selectedCandidateIdx < item.candidates.length ? selectedCandidateIdx : 0
-    const selectedCandidate = item.candidates[candidateIdx]
-    const candidateHighlights = selectedCandidate.highlights || {}
+    const originalCandidate = item.candidates[candidateIdx]
+    const candidateHighlights = originalCandidate.highlights || {}
 
     console.log(`PDFViewer: Candidate ${candidateIdx + 1} highlights from backend (normalized):`, candidateHighlights)
 
@@ -231,11 +253,89 @@ function PDFViewer({ item, documents, matchType }) {
   }
 
   const goToPreviousPage = () => {
-    setCurrentPageIdx(prev => Math.max(0, prev - 1))
+    if (viewMode === 'group') {
+      setCurrentPageIdx(prev => Math.max(0, prev - 1))
+    } else {
+      setAllPagesCurrentPage(prev => Math.max(1, prev - 1))
+    }
   }
 
   const goToNextPage = () => {
-    setCurrentPageIdx(prev => Math.min(pageNumbers.length - 1, prev + 1))
+    if (viewMode === 'group') {
+      setCurrentPageIdx(prev => Math.min(pageNumbers.length - 1, prev + 1))
+    } else {
+      const totalPages = doc?.page_count || 1
+      setAllPagesCurrentPage(prev => Math.min(totalPages, prev + 1))
+    }
+  }
+
+  const toggleViewMode = () => {
+    if (viewMode === 'group') {
+      // Switching to all-pages view: set current page to the group's current page
+      const currentGroupPage = pageNumbers[currentPageIdx]
+      setAllPagesCurrentPage(currentGroupPage || 1)
+      setViewMode('all')
+    } else {
+      // Switching to group view: find the closest group page
+      const closestIdx = pageNumbers.findIndex(p => p >= allPagesCurrentPage)
+      setCurrentPageIdx(closestIdx >= 0 ? closestIdx : 0)
+      setViewMode('group')
+    }
+  }
+
+  // Check if a page is in the current candidate group
+  const isPageInGroup = (pageNum) => {
+    const candidate = getCurrentCandidate()
+    return candidate?.page_numbers.includes(pageNum)
+  }
+
+  // Add a page to the current candidate group
+  const addPageToGroup = (pageNum) => {
+    const candidate = getCurrentCandidate()
+    if (!candidate) return
+
+    const candidateKey = `${item.row_id}_${selectedCandidateIdx}`
+    const newPageNumbers = [...candidate.page_numbers, pageNum].sort((a, b) => a - b)
+
+    setUserEditedCandidates({
+      ...userEditedCandidates,
+      [candidateKey]: {
+        ...candidate,
+        page_numbers: newPageNumbers,
+        edited: true
+      }
+    })
+  }
+
+  // Remove a page from the current candidate group
+  const removePageFromGroup = (pageNum) => {
+    const candidate = getCurrentCandidate()
+    if (!candidate) return
+
+    // Prevent removing last page
+    if (candidate.page_numbers.length <= 1) {
+      return
+    }
+
+    const candidateKey = `${item.row_id}_${selectedCandidateIdx}`
+    const newPageNumbers = candidate.page_numbers.filter(p => p !== pageNum)
+
+    setUserEditedCandidates({
+      ...userEditedCandidates,
+      [candidateKey]: {
+        ...candidate,
+        page_numbers: newPageNumbers,
+        edited: true
+      }
+    })
+  }
+
+  // Reset candidate back to original
+  const resetCandidate = () => {
+    const candidateKey = `${item.row_id}_${selectedCandidateIdx}`
+    const newEdits = { ...userEditedCandidates }
+    delete newEdits[candidateKey]
+    setUserEditedCandidates(newEdits)
   }
 
 
@@ -265,42 +365,66 @@ function PDFViewer({ item, documents, matchType }) {
       {item.candidates && item.candidates.length > 0 && (
         <div className="candidates-section">
           <h3 className="section-title">Match Evidence</h3>
-          {item.candidates.map((candidate, idx) => (
-            <div
-              key={idx}
-              className={`candidate-card ${idx === selectedCandidateIdx ? 'selected-candidate' : ''} ${idx === 0 ? 'top-candidate' : ''}`}
-              onClick={() => setSelectedCandidateIdx(idx)}
-              style={{ cursor: 'pointer' }}
-            >
-              <div className="candidate-header">
-                <span className="candidate-rank">
-                  Candidate {idx + 1}
-                  {idx === selectedCandidateIdx && ' (Viewing)'}
-                </span>
-                <span className={`candidate-score ${getMatchClass()}`}>
-                  Score: {candidate.score?.toFixed(2) || 'N/A'}
-                </span>
+          {item.candidates.map((candidate, idx) => {
+            const candidateKey = `${item.row_id}_${idx}`
+            const displayCandidate = userEditedCandidates[candidateKey] || candidate
+            const isEdited = !!userEditedCandidates[candidateKey]
+
+            return (
+              <div
+                key={idx}
+                className={`candidate-card ${idx === selectedCandidateIdx ? 'selected-candidate' : ''} ${idx === 0 ? 'top-candidate' : ''} ${isEdited ? 'edited-candidate' : ''}`}
+                onClick={() => setSelectedCandidateIdx(idx)}
+                style={{ cursor: 'pointer' }}
+              >
+                <div className="candidate-header">
+                  <span className="candidate-rank">
+                    Candidate {idx + 1}
+                    {idx === selectedCandidateIdx && ' (Viewing)'}
+                    {isEdited && ' ✏️'}
+                  </span>
+                  <span className={`candidate-score ${getMatchClass()}`}>
+                    Score: {candidate.score?.toFixed(2) || 'N/A'}
+                  </span>
+                </div>
+                <div className="candidate-pages">
+                  Pages: {displayCandidate.page_numbers.join(', ')}
+                </div>
+                <div className="candidate-rationale">
+                  {candidate.rationale?.map((line, i) => (
+                    <div key={i} className="rationale-line">{line}</div>
+                  ))}
+                </div>
+                {isEdited && idx === selectedCandidateIdx && (
+                  <button
+                    className="reset-candidate-btn"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      resetCandidate()
+                    }}
+                    title="Reset to original candidate"
+                  >
+                    Reset to Original
+                  </button>
+                )}
               </div>
-              <div className="candidate-pages">
-                Pages: {candidate.page_numbers.join(', ')}
-              </div>
-              <div className="candidate-rationale">
-                {candidate.rationale?.map((line, i) => (
-                  <div key={i} className="rationale-line">{line}</div>
-                ))}
-              </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       )}
 
-      {pageNumbers.length === 0 ? (
+      {pageNumbers.length === 0 && viewMode === 'group' ? (
         <div className="no-pages">
           <h3>No Evidence Pages</h3>
           {item.raw?.amount === 0 ? (
             <p>This line item has a $0 amount. No matching was performed since there is no transaction to verify.</p>
           ) : (
             <p>This line item has no matched evidence pages.</p>
+          )}
+          {doc?.page_count > 0 && (
+            <button onClick={toggleViewMode} className="view-all-btn">
+              View All Pages in Document
+            </button>
           )}
         </div>
       ) : (
@@ -319,26 +443,85 @@ function PDFViewer({ item, documents, matchType }) {
           {error && <div className="error">Error loading PDF: {error}</div>}
 
           <div className="page-stack">
-            {pageNumbers.length > 0 && (() => {
-              const pageNum = pageNumbers[currentPageIdx]
+            {(() => {
+              // Determine page number based on view mode
+              const pageNum = viewMode === 'group'
+                ? (pageNumbers.length > 0 ? pageNumbers[currentPageIdx] : 1)
+                : allPagesCurrentPage
+
+              const totalPages = doc?.page_count || 1
+              const isFirstPage = viewMode === 'group' ? currentPageIdx === 0 : allPagesCurrentPage === 1
+              const isLastPage = viewMode === 'group'
+                ? currentPageIdx === pageNumbers.length - 1
+                : allPagesCurrentPage === totalPages
+
               return (
                 <div key={pageNum} className="page-container">
                   <div className="page-header">
                     <div className="page-info-group">
                       <span className="page-number">Page {pageNum}</span>
-                      {pageNumbers.length > 1 && (
+                      {viewMode === 'group' && pageNumbers.length > 1 && (
                         <span className="page-counter">
                           ({currentPageIdx + 1} / {pageNumbers.length} in group)
                         </span>
                       )}
+                      {viewMode === 'all' && (
+                        <span className="page-counter">
+                          ({allPagesCurrentPage} / {totalPages} total)
+                        </span>
+                      )}
                     </div>
 
-                    {pageNumbers.length > 1 && (
+                    <div className="view-mode-toggle">
+                      <button
+                        className={`mode-btn ${viewMode === 'group' ? 'active' : ''}`}
+                        onClick={toggleViewMode}
+                        title="Switch view mode"
+                      >
+                        {viewMode === 'group' ? 'Group View' : 'All Pages'}
+                      </button>
+                    </div>
+
+                    {selectedCandidate && (
+                      <div className="page-edit-controls">
+                        {viewMode === 'group' ? (
+                          <button
+                            className="page-edit-btn remove-btn"
+                            onClick={() => removePageFromGroup(pageNum)}
+                            disabled={pageNumbers.length <= 1}
+                            title={pageNumbers.length <= 1 ? "Cannot remove the last page from group" : "Remove this page from the evidence group"}
+                          >
+                            Remove from Group
+                          </button>
+                        ) : (
+                          isPageInGroup(allPagesCurrentPage) ? (
+                            <button
+                              className="page-edit-btn remove-btn"
+                              onClick={() => removePageFromGroup(allPagesCurrentPage)}
+                              disabled={pageNumbers.length <= 1}
+                              title={pageNumbers.length <= 1 ? "Cannot remove the last page from group" : "Remove this page from the evidence group"}
+                            >
+                              Remove from Group
+                            </button>
+                          ) : (
+                            <button
+                              className="page-edit-btn add-btn"
+                              onClick={() => addPageToGroup(allPagesCurrentPage)}
+                              title="Add this page to the evidence group"
+                            >
+                              Add to Group
+                            </button>
+                          )
+                        )}
+                      </div>
+                    )}
+
+                    {((viewMode === 'group' && pageNumbers.length > 1) || viewMode === 'all') && (
                       <div className="page-navigation">
                         <button
                           className="nav-btn nav-btn-prev"
                           onClick={goToPreviousPage}
-                          disabled={currentPageIdx === 0}
+                          disabled={isFirstPage}
                           title="Previous page"
                         >
                           ←
@@ -346,7 +529,7 @@ function PDFViewer({ item, documents, matchType }) {
                         <button
                           className="nav-btn nav-btn-next"
                           onClick={goToNextPage}
-                          disabled={currentPageIdx === pageNumbers.length - 1}
+                          disabled={isLastPage}
                           title="Next page"
                         >
                           →
