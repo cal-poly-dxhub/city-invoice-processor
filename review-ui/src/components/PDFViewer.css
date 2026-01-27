@@ -329,6 +329,8 @@
   font-size: 0.75rem;
   font-weight: 500;
   color: var(--color-text-secondary);
+  min-width: 130px;
+  display: inline-block;
 }
 
 .view-mode-toggle {
@@ -350,6 +352,8 @@
   transition: all 0.2s;
   text-transform: uppercase;
   letter-spacing: 0.03em;
+  min-width: 110px;
+  text-align: center;
 }
 
 .mode-btn:hover {
@@ -379,6 +383,8 @@
   border-radius: 4px;
   cursor: pointer;
   transition: all 0.2s;
+  min-width: 160px;
+  text-align: center;
 }
 
 .page-edit-btn:disabled {
