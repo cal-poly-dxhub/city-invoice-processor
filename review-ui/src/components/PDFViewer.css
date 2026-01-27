@@ -1,0 +1,341 @@
+.pdf-viewer {
+  padding: 2.5rem 3rem;
+  max-width: 1200px;
+}
+
+.viewer-header {
+  margin-bottom: 2rem;
+  padding-bottom: 2rem;
+  border-bottom: 2px solid var(--color-border);
+}
+
+.item-summary {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  margin-bottom: 1rem;
+}
+
+.item-title {
+  font-family: var(--font-serif);
+  font-size: 2rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.item-amount {
+  font-family: var(--font-mono);
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: var(--color-accent);
+}
+
+.item-employee {
+  font-size: 1rem;
+  line-height: 1.6;
+  color: var(--color-text);
+  margin-bottom: 0.75rem;
+}
+
+.item-employee strong {
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.item-explanation {
+  font-size: 1rem;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+  max-width: 800px;
+}
+
+.item-explanation strong {
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+/* Candidates Section */
+.candidates-section {
+  margin-bottom: 2.5rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 2rem;
+}
+
+.section-title {
+  font-family: var(--font-serif);
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin-bottom: 1.5rem;
+  color: var(--color-text);
+}
+
+.candidate-card {
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 1.25rem;
+  margin-bottom: 1rem;
+}
+
+.candidate-card:last-child {
+  margin-bottom: 0;
+}
+
+.candidate-card.top-candidate {
+  border-width: 2px;
+  border-color: var(--color-accent);
+  background: linear-gradient(to right, rgba(43, 76, 126, 0.03), transparent);
+}
+
+.candidate-card.selected-candidate {
+  border-width: 2px;
+  border-color: var(--color-excellent);
+  background: linear-gradient(to right, rgba(76, 175, 80, 0.1), transparent);
+  box-shadow: 0 2px 8px rgba(76, 175, 80, 0.2);
+}
+
+.candidate-card:hover {
+  border-color: var(--color-accent);
+  box-shadow: 0 2px 8px rgba(43, 76, 126, 0.15);
+  transition: all 0.2s ease;
+}
+
+.candidate-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.candidate-rank {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-secondary);
+}
+
+.candidate-score {
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  font-weight: 600;
+  padding: 0.25rem 0.75rem;
+  border-radius: 3px;
+}
+
+.candidate-score.excellent {
+  background: var(--color-excellent);
+  color: white;
+}
+
+.candidate-score.good {
+  background: var(--color-good);
+  color: white;
+}
+
+.candidate-score.partial {
+  background: var(--color-partial);
+  color: white;
+}
+
+.candidate-score.poor {
+  background: var(--color-poor);
+  color: white;
+}
+
+.candidate-score.none {
+  background: var(--color-none);
+  color: white;
+}
+
+.candidate-pages {
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  color: var(--color-accent);
+  margin-bottom: 0.75rem;
+  font-weight: 500;
+}
+
+.candidate-rationale {
+  font-size: 0.9375rem;
+  line-height: 1.6;
+}
+
+.rationale-line {
+  color: var(--color-text-secondary);
+  margin-bottom: 0.25rem;
+}
+
+.rationale-line:first-child {
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+/* Pages Section */
+.pages-section {
+  margin-top: 2.5rem;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1.5rem;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.highlight-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--color-text-secondary);
+  background: rgba(255, 235, 59, 0.1);
+  border: 1px solid rgba(255, 235, 59, 0.3);
+  padding: 0.5rem 0.75rem;
+  border-radius: 4px;
+}
+
+.highlight-badge {
+  width: 16px;
+  height: 16px;
+  background: rgba(255, 235, 59, 0.6);
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.no-pages {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 3rem;
+  text-align: center;
+  margin-top: 2rem;
+}
+
+.no-pages h3 {
+  font-family: var(--font-serif);
+  font-size: 1.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.no-pages p {
+  color: var(--color-text-secondary);
+}
+
+.loading,
+.error {
+  padding: 2rem;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+}
+
+.error {
+  color: var(--color-none);
+}
+
+.pages-grid {
+  display: grid;
+  gap: 2rem;
+}
+
+.page-container {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 1.25rem;
+  background: var(--color-bg);
+  border-bottom: 1px solid var(--color-border);
+  gap: 1rem;
+}
+
+.page-number {
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.doc-name {
+  font-family: var(--font-sans);
+  font-size: 0.875rem;
+  color: var(--color-text-secondary);
+  flex: 1;
+  text-align: right;
+}
+
+.rotation-controls {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.rotation-btn {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 1.25rem;
+  color: var(--color-text);
+  transition: all 0.2s;
+}
+
+.rotation-btn:hover {
+  background: var(--color-accent);
+  color: white;
+  border-color: var(--color-accent);
+}
+
+.rotation-btn:active {
+  transform: scale(0.95);
+}
+
+.page-canvas-wrapper {
+  padding: 2rem;
+  display: flex;
+  justify-content: center;
+  background: #f5f5f5;
+}
+
+.page-canvas {
+  max-width: 100%;
+  height: auto;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  border: 1px solid var(--color-border);
+  background: white;
+  display: block;
+}
+
+.highlights-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.highlight-rect {
+  position: absolute;
+  background: rgba(255, 235, 59, 0.4);
+  border: 1px solid rgba(255, 235, 59, 0.6);
+  pointer-events: none;
+  mix-blend-mode: multiply;
+}
