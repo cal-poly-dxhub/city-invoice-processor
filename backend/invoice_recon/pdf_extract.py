@@ -62,7 +62,7 @@ def extract_page_text_and_words_pymupdf(page) -> Tuple[str, List[Dict]]:
 
         # Get page dimensions for normalization
         # IMPORTANT: Use mediabox, not rect, because get_text("words") returns coordinates
-        # in the original (pre-rotation) coordinate space
+        # in the original (pre-rotation) coordinate space, not the rotated display space
         mediabox = page.mediabox
         page_width = mediabox.width
         page_height = mediabox.height

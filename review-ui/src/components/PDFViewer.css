@@ -89,6 +89,19 @@
   background: linear-gradient(to right, rgba(43, 76, 126, 0.03), transparent);
 }
 
+.candidate-card.selected-candidate {
+  border-width: 2px;
+  border-color: var(--color-excellent);
+  background: linear-gradient(to right, rgba(76, 175, 80, 0.1), transparent);
+  box-shadow: 0 2px 8px rgba(76, 175, 80, 0.2);
+}
+
+.candidate-card:hover {
+  border-color: var(--color-accent);
+  box-shadow: 0 2px 8px rgba(43, 76, 126, 0.15);
+  transition: all 0.2s ease;
+}
+
 .candidate-header {
   display: flex;
   justify-content: space-between;

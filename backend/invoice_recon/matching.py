@@ -84,18 +84,15 @@ def find_word_boxes_for_terms(
                 })
                 break
 
-            # For amounts: allow flexible matching with punctuation removed
-            # Only use substring matching if the term contains digits (likely an amount)
+            # For amounts: allow flexible matching with punctuation removed, but exact only
+            # Only match if the term contains digits (likely an amount)
             if re.search(r'\d', term):
                 word_alphanum = re.sub(r'[^\w]', '', word_text.lower())
                 term_alphanum = re.sub(r'[^\w]', '', term.lower())
 
-                # Allow substring matching for amounts (e.g., "$1,234.56" contains "123456")
-                if word_alphanum and term_alphanum and (
-                    word_alphanum == term_alphanum or
-                    term_alphanum in word_alphanum or
-                    word_alphanum in term_alphanum
-                ):
+                # Exact match only (e.g., "$12.34" matches "1234" but not "234")
+                if word_alphanum and term_alphanum and word_alphanum == term_alphanum:
+                    logger.debug(f"Amount match: word='{word_text}' ({word_alphanum}) matches term='{term}' ({term_alphanum})")
                     matched_boxes.append({
                         "left": word_obj.get("left", 0),
                         "top": word_obj.get("top", 0),
@@ -124,12 +121,26 @@ def get_search_terms_for_line_item(line_item: LineItem) -> List[str]:
     if line_item.employee_first_name and line_item.employee_last_name:
         terms.append(f"{line_item.employee_first_name} {line_item.employee_last_name}")
 
-    # Add amount if present
+    # Add amount if present - multiple formatting variations
     if line_item.amount:
         amount_str = str(line_item.amount)
+
+        # Add raw amount
         terms.append(amount_str)
+
+        # Add with dollar sign
         terms.append(f"${amount_str}")
 
+        # Add with comma thousands separator (e.g., "5,000.00")
+        try:
+            amount_float = float(line_item.amount)
+            amount_formatted = f"{amount_float:,.2f}"
+            terms.append(amount_formatted)
+            terms.append(f"${amount_formatted}")
+        except (ValueError, TypeError):
+            pass
+
+    logger.debug(f"Search terms for amount {line_item.amount}: {[t for t in terms if re.search(r'\\d', t)]}")
     return terms
 
 
@@ -416,13 +427,21 @@ def generate_amount_based_candidates(
     if page_scores:
         best_page, best_score, best_rationale = page_scores[0]
 
-        # Find word boxes for the amount
+        # Find word boxes for the amount - use same logic as get_search_terms_for_line_item
+        search_terms = []
         amount_str = str(line_item.amount)
-        search_terms = [
-            amount_str,
-            f"${amount_str}",
-            amount_str.replace(".", ""),  # For "1234" matching "$12.34"
-        ]
+        search_terms.append(amount_str)
+        search_terms.append(f"${amount_str}")
+
+        # Add formatted version with 2 decimal places
+        try:
+            amount_float = float(line_item.amount)
+            amount_formatted = f"{amount_float:,.2f}"
+            search_terms.append(amount_formatted)
+            search_terms.append(f"${amount_formatted}")
+        except (ValueError, TypeError):
+            pass
+
         highlights = {
             best_page.page_number: find_word_boxes_for_terms(best_page, search_terms)
         }
@@ -525,6 +544,16 @@ def generate_cross_page_component_candidates(
                     page_num = amt["page"].page_number
                     amt_str = str(amt["value"])
                     search_terms = [amt_str, f"${amt_str}", amt["raw"]]
+
+                    # Add formatted version with 2 decimal places
+                    try:
+                        amt_float = float(amt["value"])
+                        amt_formatted = f"{amt_float:,.2f}"
+                        search_terms.append(amt_formatted)
+                        search_terms.append(f"${amt_formatted}")
+                    except (ValueError, TypeError):
+                        pass
+
                     boxes = find_word_boxes_for_terms(amt["page"], search_terms)
                     if boxes:
                         highlights[page_num] = boxes

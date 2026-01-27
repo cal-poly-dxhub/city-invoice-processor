@@ -10,17 +10,32 @@ function PDFViewer({ item, documents, matchType }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [highlights, setHighlights] = useState({})
-  const [pageRotations, setPageRotations] = useState({}) // Track user rotation per page (0, 90, 180, 270)
-  const [pageInherentRotations, setPageInherentRotations] = useState({}) // Track PDF's inherent rotation
+  const [selectedCandidateIdx, setSelectedCandidateIdx] = useState(0) // Track which candidate to display
+  const pageInherentRotations = useRef({}) // Track PDF's inherent rotation
   const canvasRefs = useRef({})
   const containerRefs = useRef({})
 
-  const doc = documents.find(d => d.doc_id === item.selected_evidence?.doc_id)
-  const pageNumbers = item.selected_evidence?.page_numbers || []
+  // Get doc and pages from the selected candidate (not selected_evidence)
+  const selectedCandidate = item.candidates?.[selectedCandidateIdx]
+  const doc = selectedCandidate
+    ? documents.find(d => d.doc_id === selectedCandidate.doc_id)
+    : documents.find(d => d.doc_id === item.selected_evidence?.doc_id)
+  const pageNumbers = selectedCandidate
+    ? selectedCandidate.page_numbers || []
+    : item.selected_evidence?.page_numbers || []
 
   useEffect(() => {
     if (!doc) return
 
+    // Reset selected candidate when viewing a new item
+    if (item.row_id) {
+      setSelectedCandidateIdx(0)
+    }
+    loadPDF()
+  }, [item.row_id])
+
+  useEffect(() => {
+    if (!doc) return
     loadPDF()
   }, [doc])
 
@@ -28,7 +43,15 @@ function PDFViewer({ item, documents, matchType }) {
     if (pdfDoc && pageNumbers.length > 0) {
       renderPages()
     }
-  }, [pdfDoc, pageNumbers, pageRotations])
+  }, [pdfDoc, pageNumbers])
+
+  // Re-render highlights when selected candidate changes
+  useEffect(() => {
+    if (pdfDoc && pageNumbers.length > 0) {
+      const backendHighlights = getHighlightsFromCandidates()
+      setHighlights(backendHighlights)
+    }
+  }, [selectedCandidateIdx])
 
   const loadPDF = async () => {
     try {
@@ -65,8 +88,6 @@ function PDFViewer({ item, documents, matchType }) {
   const renderPages = async () => {
     if (!pdfDoc) return
 
-    const inherentRotations = {}
-
     for (const pageNum of pageNumbers) {
       const canvas = canvasRefs.current[pageNum]
       if (!canvas) continue
@@ -74,11 +95,12 @@ function PDFViewer({ item, documents, matchType }) {
       try {
         const page = await pdfDoc.getPage(pageNum)
 
-        // Store the page's inherent rotation
-        inherentRotations[pageNum] = page.rotate || 0
+        // Store the page's inherent rotation in ref (immediate, no async state update)
+        pageInherentRotations.current[pageNum] = page.rotate || 0
 
-        const userRotation = pageRotations[pageNum] || 0
-        const viewport = page.getViewport({ scale: 1.5, rotation: userRotation })
+        // Render without rotation (rotation: 0 overrides inherent rotation)
+        // This keeps PDF in original orientation to match backend coordinate space
+        const viewport = page.getViewport({ scale: 1.5, rotation: 0 })
 
         const context = canvas.getContext('2d')
 
@@ -99,9 +121,6 @@ function PDFViewer({ item, documents, matchType }) {
       }
     }
 
-    // Store inherent rotations
-    setPageInherentRotations(inherentRotations)
-
     // Get normalized (0-1) highlights from backend
     // Store them in normalized form so they scale dynamically
     const backendHighlights = getHighlightsFromCandidates()
@@ -109,16 +128,18 @@ function PDFViewer({ item, documents, matchType }) {
   }
 
   const getHighlightsFromCandidates = () => {
-    // Get highlights from the top candidate (if available)
+    // Get highlights from the selected candidate
     if (!item.candidates || item.candidates.length === 0) {
       console.log('PDFViewer: No candidates found')
       return {}
     }
 
-    const topCandidate = item.candidates[0]
-    const candidateHighlights = topCandidate.highlights || {}
+    // Use selected candidate, or fallback to first if out of bounds
+    const candidateIdx = selectedCandidateIdx < item.candidates.length ? selectedCandidateIdx : 0
+    const selectedCandidate = item.candidates[candidateIdx]
+    const candidateHighlights = selectedCandidate.highlights || {}
 
-    console.log('PDFViewer: Candidate highlights from backend (normalized):', candidateHighlights)
+    console.log(`PDFViewer: Candidate ${candidateIdx + 1} highlights from backend (normalized):`, candidateHighlights)
 
     // Return highlights in normalized (0-1) form
     // They'll be converted to pixels at render time so they scale dynamically
@@ -182,13 +203,6 @@ function PDFViewer({ item, documents, matchType }) {
     }
   }
 
-  const rotatePage = (pageNum, direction) => {
-    setPageRotations(prev => {
-      const currentRotation = prev[pageNum] || 0
-      const newRotation = (currentRotation + direction + 360) % 360
-      return { ...prev, [pageNum]: newRotation }
-    })
-  }
 
   return (
     <div className="pdf-viewer">
@@ -217,9 +231,17 @@ function PDFViewer({ item, documents, matchType }) {
         <div className="candidates-section">
           <h3 className="section-title">Match Evidence</h3>
           {item.candidates.map((candidate, idx) => (
-            <div key={idx} className={`candidate-card ${idx === 0 ? 'top-candidate' : ''}`}>
+            <div
+              key={idx}
+              className={`candidate-card ${idx === selectedCandidateIdx ? 'selected-candidate' : ''} ${idx === 0 ? 'top-candidate' : ''}`}
+              onClick={() => setSelectedCandidateIdx(idx)}
+              style={{ cursor: 'pointer' }}
+            >
               <div className="candidate-header">
-                <span className="candidate-rank">Candidate {idx + 1}</span>
+                <span className="candidate-rank">
+                  Candidate {idx + 1}
+                  {idx === selectedCandidateIdx && ' (Viewing)'}
+                </span>
                 <span className={`candidate-score ${getMatchClass()}`}>
                   Score: {candidate.score?.toFixed(2) || 'N/A'}
                 </span>
@@ -262,29 +284,11 @@ function PDFViewer({ item, documents, matchType }) {
           {error && <div className="error">Error loading PDF: {error}</div>}
 
           <div className="pages-grid">
-            {pageNumbers.map((pageNum) => {
-              const rotation = pageRotations[pageNum] || 0
-              return (
-              <div key={`${pageNum}-${rotation}`} className="page-container">
+            {pageNumbers.map((pageNum) => (
+              <div key={pageNum} className="page-container">
                 <div className="page-header">
                   <span className="page-number">Page {pageNum}</span>
                   <span className="doc-name">{doc?.budget_item}</span>
-                  <div className="rotation-controls">
-                    <button
-                      className="rotation-btn"
-                      onClick={() => rotatePage(pageNum, -90)}
-                      title="Rotate left (counter-clockwise)"
-                    >
-                      ↺
-                    </button>
-                    <button
-                      className="rotation-btn"
-                      onClick={() => rotatePage(pageNum, 90)}
-                      title="Rotate right (clockwise)"
-                    >
-                      ↻
-                    </button>
-                  </div>
                 </div>
                 <div
                   className="page-canvas-wrapper"
@@ -301,12 +305,9 @@ function PDFViewer({ item, documents, matchType }) {
                     />
                     <div className="highlights-overlay">
                       {highlights[pageNum]?.map((rect, idx) => {
-                        // Apply rotation transformation to highlight coordinates
-                        // Total rotation = inherent (from PDF) + user (from buttons)
-                        const inherentRotation = pageInherentRotations[pageNum] || 0
-                        const userRotation = pageRotations[pageNum] || 0
-                        const totalRotation = (inherentRotation + userRotation) % 360
-                        const transformedRect = transformHighlight(rect, totalRotation)
+                        // No transformation needed - both PDF and highlights are in original (mediabox) space
+                        // PDF.js is rendered with rotation: 0 to match backend coordinate extraction
+                        const transformedRect = rect
 
                         // Convert normalized (0-1) coordinates to pixels at render time
                         // IMPORTANT: Use offsetWidth/offsetHeight (display size) not width/height (drawing size)
@@ -336,8 +337,7 @@ function PDFViewer({ item, documents, matchType }) {
                   </div>
                 </div>
               </div>
-              )
-            })}
+            ))}
           </div>
         </div>
       )}
