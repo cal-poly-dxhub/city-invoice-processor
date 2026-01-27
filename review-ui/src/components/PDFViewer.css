@@ -240,9 +240,9 @@
   color: var(--color-none);
 }
 
-.pages-grid {
-  display: grid;
-  gap: 2rem;
+.page-stack {
+  display: flex;
+  flex-direction: column;
 }
 
 .page-container {
@@ -259,7 +259,13 @@
   padding: 1rem 1.25rem;
   background: var(--color-bg);
   border-bottom: 1px solid var(--color-border);
-  gap: 1rem;
+  gap: 1.5rem;
+}
+
+.page-info-group {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 
 .page-number {
@@ -267,6 +273,50 @@
   font-size: 0.875rem;
   font-weight: 600;
   color: var(--color-text);
+}
+
+.page-counter {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+}
+
+.page-navigation {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.nav-btn {
+  font-size: 1.125rem;
+  padding: 0.375rem 0.625rem;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 32px;
+}
+
+.nav-btn:hover:not(:disabled) {
+  background: var(--color-accent);
+  color: white;
+  border-color: var(--color-accent);
+}
+
+.nav-btn:active:not(:disabled) {
+  transform: scale(0.95);
+}
+
+.nav-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
 }
 
 .doc-name {

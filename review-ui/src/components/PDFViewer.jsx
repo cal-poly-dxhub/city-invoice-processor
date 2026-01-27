@@ -11,6 +11,7 @@ function PDFViewer({ item, documents, matchType }) {
   const [error, setError] = useState(null)
   const [highlights, setHighlights] = useState({})
   const [selectedCandidateIdx, setSelectedCandidateIdx] = useState(0) // Track which candidate to display
+  const [currentPageIdx, setCurrentPageIdx] = useState(0) // Track which page in the group is currently displayed
   const [pageRotations, setPageRotations] = useState({}) // Track user-applied rotation per page (0, 90, 180, 270)
   const [viewportDimensions, setViewportDimensions] = useState({}) // Store viewport dimensions for each page
   const pageInherentRotations = useRef({}) // Track PDF's inherent rotation
@@ -29,9 +30,10 @@ function PDFViewer({ item, documents, matchType }) {
   useEffect(() => {
     if (!doc) return
 
-    // Reset selected candidate when viewing a new item
+    // Reset selected candidate and page index when viewing a new item
     if (item.row_id) {
       setSelectedCandidateIdx(0)
+      setCurrentPageIdx(0)
     }
     loadPDF()
   }, [item.row_id])
@@ -45,7 +47,7 @@ function PDFViewer({ item, documents, matchType }) {
     if (pdfDoc && pageNumbers.length > 0) {
       renderPages()
     }
-  }, [pdfDoc, pageNumbers, pageRotations])
+  }, [pdfDoc, pageNumbers, pageRotations, currentPageIdx])
 
   // Re-render highlights when selected candidate changes
   useEffect(() => {
@@ -53,6 +55,8 @@ function PDFViewer({ item, documents, matchType }) {
       const backendHighlights = getHighlightsFromCandidates()
       setHighlights(backendHighlights)
     }
+    // Reset to first page when candidate changes
+    setCurrentPageIdx(0)
   }, [selectedCandidateIdx])
 
   const loadPDF = async () => {
@@ -88,57 +92,55 @@ function PDFViewer({ item, documents, matchType }) {
   }
 
   const renderPages = async () => {
-    if (!pdfDoc) return
+    if (!pdfDoc || pageNumbers.length === 0) return
 
-    const newViewportDimensions = {}
+    // Only render the current page in stack view
+    const pageNum = pageNumbers[currentPageIdx]
+    const canvas = canvasRefs.current[pageNum]
+    if (!canvas) return
 
-    for (const pageNum of pageNumbers) {
-      const canvas = canvasRefs.current[pageNum]
-      if (!canvas) continue
+    try {
+      const page = await pdfDoc.getPage(pageNum)
 
-      try {
-        const page = await pdfDoc.getPage(pageNum)
+      // Store the page's inherent rotation in ref (immediate, no async state update)
+      pageInherentRotations.current[pageNum] = page.rotate || 0
 
-        // Store the page's inherent rotation in ref (immediate, no async state update)
-        pageInherentRotations.current[pageNum] = page.rotate || 0
+      // Apply user-selected rotation (default to 0 if not set)
+      // This renders the PDF at the user's preferred orientation
+      const userRotation = pageRotations[pageNum] || 0
+      const viewport = page.getViewport({ scale: 1.5, rotation: userRotation })
 
-        // Apply user-selected rotation (default to 0 if not set)
-        // This renders the PDF at the user's preferred orientation
-        const userRotation = pageRotations[pageNum] || 0
-        const viewport = page.getViewport({ scale: 1.5, rotation: userRotation })
-
-        // Store viewport dimensions for this page (for highlight calculations)
-        newViewportDimensions[pageNum] = {
+      // Store viewport dimensions for this page (for highlight calculations)
+      setViewportDimensions({
+        ...viewportDimensions,
+        [pageNum]: {
           width: viewport.width,
           height: viewport.height
         }
+      })
 
-        const context = canvas.getContext('2d')
+      const context = canvas.getContext('2d')
 
-        // Clear the canvas before re-rendering
-        context.clearRect(0, 0, canvas.width, canvas.height)
+      // Clear the canvas before re-rendering
+      context.clearRect(0, 0, canvas.width, canvas.height)
 
-        // Update canvas dimensions for the rotated viewport
-        canvas.width = viewport.width
-        canvas.height = viewport.height
+      // Update canvas dimensions for the rotated viewport
+      canvas.width = viewport.width
+      canvas.height = viewport.height
 
-        // Render PDF content
-        await page.render({
-          canvasContext: context,
-          viewport: viewport
-        }).promise
-      } catch (err) {
-        console.error(`Error rendering page ${pageNum}:`, err)
-      }
+      // Render PDF content
+      await page.render({
+        canvasContext: context,
+        viewport: viewport
+      }).promise
+
+      // Get normalized (0-1) highlights from backend
+      // Store them in normalized form so they scale dynamically
+      const backendHighlights = getHighlightsFromCandidates()
+      setHighlights(backendHighlights)
+    } catch (err) {
+      console.error(`Error rendering page ${pageNum}:`, err)
     }
-
-    // Update viewport dimensions state
-    setViewportDimensions(newViewportDimensions)
-
-    // Get normalized (0-1) highlights from backend
-    // Store them in normalized form so they scale dynamically
-    const backendHighlights = getHighlightsFromCandidates()
-    setHighlights(backendHighlights)
   }
 
   const getHighlightsFromCandidates = () => {
@@ -228,6 +230,14 @@ function PDFViewer({ item, documents, matchType }) {
     })
   }
 
+  const goToPreviousPage = () => {
+    setCurrentPageIdx(prev => Math.max(0, prev - 1))
+  }
+
+  const goToNextPage = () => {
+    setCurrentPageIdx(prev => Math.min(pageNumbers.length - 1, prev + 1))
+  }
+
 
   return (
     <div className="pdf-viewer">
@@ -308,88 +318,121 @@ function PDFViewer({ item, documents, matchType }) {
           {loading && <div className="loading">Loading PDF...</div>}
           {error && <div className="error">Error loading PDF: {error}</div>}
 
-          <div className="pages-grid">
-            {pageNumbers.map((pageNum) => (
-              <div key={pageNum} className="page-container">
-                <div className="page-header">
-                  <span className="page-number">Page {pageNum}</span>
-                  <div className="rotation-controls">
-                    <button
-                      className="rotation-btn"
-                      onClick={() => rotatePage(pageNum, 'ccw')}
-                      title="Rotate counter-clockwise"
-                    >
-                      ↶
-                    </button>
-                    <button
-                      className="rotation-btn"
-                      onClick={() => rotatePage(pageNum, 'cw')}
-                      title="Rotate clockwise"
-                    >
-                      ↷
-                    </button>
+          <div className="page-stack">
+            {pageNumbers.length > 0 && (() => {
+              const pageNum = pageNumbers[currentPageIdx]
+              return (
+                <div key={pageNum} className="page-container">
+                  <div className="page-header">
+                    <div className="page-info-group">
+                      <span className="page-number">Page {pageNum}</span>
+                      {pageNumbers.length > 1 && (
+                        <span className="page-counter">
+                          ({currentPageIdx + 1} / {pageNumbers.length} in group)
+                        </span>
+                      )}
+                    </div>
+
+                    {pageNumbers.length > 1 && (
+                      <div className="page-navigation">
+                        <button
+                          className="nav-btn nav-btn-prev"
+                          onClick={goToPreviousPage}
+                          disabled={currentPageIdx === 0}
+                          title="Previous page"
+                        >
+                          ←
+                        </button>
+                        <button
+                          className="nav-btn nav-btn-next"
+                          onClick={goToNextPage}
+                          disabled={currentPageIdx === pageNumbers.length - 1}
+                          title="Next page"
+                        >
+                          →
+                        </button>
+                      </div>
+                    )}
+
+                    <div className="rotation-controls">
+                      <button
+                        className="rotation-btn"
+                        onClick={() => rotatePage(pageNum, 'ccw')}
+                        title="Rotate counter-clockwise"
+                      >
+                        ↶
+                      </button>
+                      <button
+                        className="rotation-btn"
+                        onClick={() => rotatePage(pageNum, 'cw')}
+                        title="Rotate clockwise"
+                      >
+                        ↷
+                      </button>
+                    </div>
+
+                    <span className="doc-name">{doc?.budget_item}</span>
                   </div>
-                  <span className="doc-name">{doc?.budget_item}</span>
-                </div>
-                <div
-                  className="page-canvas-wrapper"
-                  ref={(el) => {
-                    if (el) containerRefs.current[pageNum] = el
-                  }}
-                >
-                  <div style={{ position: 'relative', display: 'inline-block' }}>
-                    <canvas
-                      ref={(el) => {
-                        if (el) canvasRefs.current[pageNum] = el
-                      }}
-                      className="page-canvas"
-                    />
-                    <div className="highlights-overlay">
-                      {highlights[pageNum]?.map((rect, idx) => {
-                        // Transform highlight coordinates based on user-selected rotation
-                        // Backend coordinates are in original (0° rotation) mediabox space
-                        const userRotation = pageRotations[pageNum] || 0
-                        const transformedRect = transformHighlight(rect, userRotation)
+                  <div
+                    className="page-canvas-wrapper"
+                    ref={(el) => {
+                      if (el) containerRefs.current[pageNum] = el
+                    }}
+                  >
+                    <div style={{ position: 'relative', display: 'inline-block' }}>
+                      <canvas
+                        ref={(el) => {
+                          if (el) canvasRefs.current[pageNum] = el
+                        }}
+                        className="page-canvas"
+                      />
+                      <div className="highlights-overlay">
+                        {highlights[pageNum]?.map((rect, idx) => {
+                          // Transform highlight coordinates based on user-selected rotation
+                          // Backend coordinates are in original (0° rotation) mediabox space
+                          const userRotation = pageRotations[pageNum] || 0
+                          const transformedRect = transformHighlight(rect, userRotation)
 
-                        // Get viewport dimensions for this page
-                        const viewport = viewportDimensions[pageNum]
-                        if (!viewport) return null
+                          // Get viewport dimensions for this page
+                          const viewport = viewportDimensions[pageNum]
+                          if (!viewport) return null
 
-                        // Get canvas for scaling factor (CSS might scale the canvas)
-                        const canvas = canvasRefs.current[pageNum]
-                        if (!canvas) return null
+                          // Get canvas for scaling factor (CSS might scale the canvas)
+                          const canvas = canvasRefs.current[pageNum]
+                          if (!canvas) return null
 
-                        // Calculate scaling factor: display size / drawing buffer size
-                        // This accounts for CSS scaling (max-width: 100%, height: auto)
-                        const scaleX = canvas.offsetWidth / canvas.width
-                        const scaleY = canvas.offsetHeight / canvas.height
+                          // Calculate scaling factor: display size / drawing buffer size
+                          // This accounts for CSS scaling (max-width: 100%, height: auto)
+                          const scaleX = canvas.offsetWidth / canvas.width
+                          const scaleY = canvas.offsetHeight / canvas.height
 
-                        // Convert normalized (0-1) coordinates to display pixels
-                        // Use viewport dimensions (which match canvas drawing buffer)
-                        // then apply CSS scaling factor
-                        const pixelLeft = transformedRect.left * viewport.width * scaleX
-                        const pixelTop = transformedRect.top * viewport.height * scaleY
-                        const pixelWidth = transformedRect.width * viewport.width * scaleX
-                        const pixelHeight = transformedRect.height * viewport.height * scaleY
+                          // Convert normalized (0-1) coordinates to display pixels
+                          // Use viewport dimensions (which match canvas drawing buffer)
+                          // then apply CSS scaling factor
+                          const pixelLeft = transformedRect.left * viewport.width * scaleX
+                          const pixelTop = transformedRect.top * viewport.height * scaleY
+                          const pixelWidth = transformedRect.width * viewport.width * scaleX
+                          const pixelHeight = transformedRect.height * viewport.height * scaleY
 
-                        return (
-                          <div
-                            key={idx}
-                            className="highlight-rect"
-                            style={{
-                              left: `${pixelLeft}px`,
-                              top: `${pixelTop}px`,
-                              width: `${pixelWidth}px`,
-                              height: `${pixelHeight}px`,
-                            }}
-                          />
-                        )
-                      })}
+                          return (
+                            <div
+                              key={idx}
+                              className="highlight-rect"
+                              style={{
+                                left: `${pixelLeft}px`,
+                                top: `${pixelTop}px`,
+                                width: `${pixelWidth}px`,
+                                height: `${pixelHeight}px`,
+                              }}
+                            />
+                          )
+                        })}
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              )
+            })()}
           </div>
         </div>
       )}
