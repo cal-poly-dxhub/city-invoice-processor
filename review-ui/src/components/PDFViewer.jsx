@@ -202,6 +202,7 @@ function PDFViewer({ item, documents, matchType }) {
 
   const getMatchClass = () => {
     if (matchType === 'amount' || matchType === 'cross-page') return 'excellent'
+    if (matchType === 'low-confidence') return 'poor'
     if (matchType === 'too-many') return 'poor'
     if (matchType === 'none') return 'none'
     return 'partial'

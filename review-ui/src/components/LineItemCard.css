@@ -73,6 +73,11 @@
   color: white;
 }
 
+.match-badge.no-pdf {
+  background: #f59e0b;
+  color: white;
+}
+
 .match-badge.none {
   background: var(--color-none);
   color: white;

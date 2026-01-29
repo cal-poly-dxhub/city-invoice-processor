@@ -34,8 +34,10 @@ function FilterBar({
           <option value="amount">Amount-Based</option>
           <option value="cross-page">Cross-Page</option>
           <option value="keyword">Keyword</option>
+          <option value="low-confidence">Low Confidence</option>
           <option value="too-many">Too Many Pages</option>
           <option value="zero-amount">$0 - No Match Needed</option>
+          <option value="no-pdf">No PDF Uploaded</option>
           <option value="none">No Match</option>
         </select>
       </div>

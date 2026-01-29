@@ -10,8 +10,10 @@ function LineItemCard({ item, matchType, isSelected, onClick }) {
       case 'amount': return 'Amount Match'
       case 'cross-page': return 'Cross-Page'
       case 'keyword': return 'Keyword Match'
+      case 'low-confidence': return 'Low Confidence'
       case 'too-many': return 'Too Many Pages'
       case 'zero-amount': return '$0 - No Match Needed'
+      case 'no-pdf': return 'No PDF Uploaded'
       case 'none': return 'No Match'
       default: return 'Unknown'
     }
@@ -23,8 +25,10 @@ function LineItemCard({ item, matchType, isSelected, onClick }) {
       if (score >= 0.70) return 'good'
       return 'partial'
     }
+    if (matchType === 'low-confidence') return 'poor'
     if (matchType === 'too-many') return 'poor'
     if (matchType === 'zero-amount') return 'zero'
+    if (matchType === 'no-pdf') return 'no-pdf'
     if (matchType === 'none') return 'none'
     return 'partial'
   }

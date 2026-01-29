@@ -38,12 +38,30 @@ function App() {
     // Check if amount is explicitly $0 - no matching needed
     if (item.raw?.amount === 0) return 'zero-amount'
 
+    // Check if no PDF was uploaded for this budget item (evaluated BEFORE match checks)
+    // Backend sets doc_id to null when no PDF found for the budget item
+    if (item.selected_evidence?.doc_id === null) return 'no-pdf'
+
     if (!item.candidates || item.candidates.length === 0) return 'none'
-    const topRationale = item.candidates[0]?.rationale?.[0] || ''
+
+    const topCandidate = item.candidates[0]
+    const score = topCandidate?.score || 0
+    const topRationale = topCandidate?.rationale?.[0] || ''
+
+    // Check for specific match types first
     if (topRationale.includes('Amount-based')) return 'amount'
     if (topRationale.includes('Cross-page')) return 'cross-page'
     if (item.selected_evidence.page_numbers.length === 0) return 'none'
+
+    // Low confidence check BEFORE too-many check
+    // This catches cases where system includes many/all pages due to poor matching
+    if (score < 0.40 || topRationale.includes('neighbors') || topRationale.includes('Contiguous cluster')) {
+      return 'low-confidence'
+    }
+
+    // Too-many only applies to high-confidence matches spread across many pages
     if (item.selected_evidence.page_numbers.length > 8) return 'too-many'
+
     return 'keyword'
   }
 
