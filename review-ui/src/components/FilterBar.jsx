@@ -5,10 +5,27 @@ function FilterBar({
   selectedBudgetItem,
   setSelectedBudgetItem,
   selectedMatchType,
-  setSelectedMatchType
+  setSelectedMatchType,
+  agencies,
+  selectedAgency,
+  setSelectedAgency,
+  verificationMode,
+  setVerificationMode
 }) {
   return (
     <div className="filter-bar">
+      <div className="filter-section">
+        <label className="filter-label">Verification Status</label>
+        <select
+          value={verificationMode}
+          onChange={(e) => setVerificationMode(e.target.value)}
+          className="filter-select"
+        >
+          <option value="needs-verification">Needs Verification</option>
+          <option value="all">All Items</option>
+        </select>
+      </div>
+
       <div className="filter-section">
         <label className="filter-label">Budget Item</label>
         <select
@@ -19,6 +36,20 @@ function FilterBar({
           <option value="all">All Items</option>
           {budgetItems.map((item) => (
             <option key={item} value={item}>{item}</option>
+          ))}
+        </select>
+      </div>
+
+      <div className="filter-section">
+        <label className="filter-label">Agency</label>
+        <select
+          value={selectedAgency}
+          onChange={(e) => setSelectedAgency(e.target.value)}
+          className="filter-select"
+        >
+          <option value="all">All Agencies</option>
+          {agencies.map((agency) => (
+            <option key={agency} value={agency}>{agency}</option>
           ))}
         </select>
       </div>

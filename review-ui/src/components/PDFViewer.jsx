@@ -5,7 +5,7 @@ import './PDFViewer.css'
 // Set up PDF.js worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`
 
-function PDFViewer({ item, documents, matchType }) {
+function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted }) {
   const [pdfDoc, setPdfDoc] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -554,6 +554,14 @@ function PDFViewer({ item, documents, matchType }) {
                         ↷
                       </button>
                     </div>
+
+                    <button
+                      className={`mark-done-btn ${isCompleted ? 'completed' : ''}`}
+                      onClick={() => onMarkGroupDone(item.row_id)}
+                      title={isCompleted ? "This line item is already marked as done" : "Mark this line item as verified and move to next item"}
+                    >
+                      {isCompleted ? '✓ Done' : 'Mark Line Item Done'}
+                    </button>
 
                     <span className="doc-name">{doc?.budget_item}</span>
                   </div>

@@ -153,10 +153,13 @@ def score_page_for_employee(
 
     Returns: (score, rationale)
 
-    Scoring:
-    - +0.70 if last name exact match
-    - +0.20 if first name exact match OR first initial matches
+    Scoring (updated to reduce false positives from common surnames):
+    - +0.35 if last name exact match (reduced from 0.70)
+    - +0.30 if first name exact match
+    - +0.20 if first name fuzzy match (ratio >= 80, catches nicknames)
+    - +0.15 if first initial matches (only if no fuzzy match)
     - +0.15 if token_sort_ratio(full_name) >= 90
+    - +0.40 if amount on page matches line item amount (validation)
     - +0.10 if doc_type in {"timecard", "paystub"}
     - Cap to 1.0
     """
@@ -176,30 +179,74 @@ def score_page_for_employee(
     people = page.entities.get("people", [])
 
     matched_person = False
+    best_first_name_score = 0.0
+    best_first_name_rationale = None
+
     for person in people:
         p_full, p_first, p_last = normalize_person_name(person)
 
-        # Last name exact match
+        # Last name exact match (reduced weight to avoid false positives)
         if li_last and p_last and li_last == p_last:
-            score += 0.70
-            rationale.append(f"Last name match: {li_last}")
-            matched_person = True
+            if not matched_person:
+                score += 0.35
+                rationale.append(f"Last name match: {li_last}")
+                matched_person = True
 
-        # First name exact match or initial match
-        if li_first and p_first:
+        # First name matching - track best match to avoid double-counting
+        if li_first and p_first and matched_person:
+            first_score = 0.0
+            first_rationale = None
+
+            # Exact match (highest priority)
             if li_first == p_first:
-                score += 0.20
-                rationale.append(f"First name match: {li_first}")
-            elif li_first[0] == p_first[0]:
-                score += 0.20
-                rationale.append(f"First initial match: {li_first[0]}")
+                first_score = 0.30
+                first_rationale = f"First name match: {li_first}"
+            else:
+                # Fuzzy match for nicknames (Bob/Robert, Maggie/Margaret)
+                first_ratio = fuzz.ratio(li_first, p_first)
+                if first_ratio >= 80:
+                    first_score = 0.20
+                    first_rationale = f"First name fuzzy match: {li_first} ~ {p_first} ({first_ratio}%)"
+                # Initial match (fallback, only if no fuzzy match)
+                elif li_first[0] == p_first[0]:
+                    first_score = 0.15
+                    first_rationale = f"First initial match: {li_first[0]}"
 
-        # Fuzzy full name match
-        if li_full and p_full:
+            # Keep best first name match
+            if first_score > best_first_name_score:
+                best_first_name_score = first_score
+                best_first_name_rationale = first_rationale
+
+        # Fuzzy full name match (only if BOTH first and last names have some similarity)
+        # This prevents false positives from shared surnames
+        if li_full and p_full and matched_person and best_first_name_score > 0:
             ratio = fuzz.token_sort_ratio(li_full, p_full)
             if ratio >= 90:
-                score += 0.15
+                score += 0.10
                 rationale.append(f"Full name fuzzy match: {ratio}%")
+
+    # Add best first name match
+    if best_first_name_rationale:
+        score += best_first_name_score
+        rationale.append(best_first_name_rationale)
+
+    # Amount validation - strong signal when combined with last name
+    if line_item.amount and matched_person:
+        target_amount = float(line_item.amount)
+        page_amounts = page.entities.get("amounts", [])
+
+        for amt_obj in page_amounts:
+            amt_value = amt_obj.get("value")
+            if amt_value is not None:
+                try:
+                    page_amount = float(amt_value)
+                    # Exact match (within $0.01)
+                    if abs(page_amount - target_amount) < 0.01:
+                        score += 0.40
+                        rationale.append(f"Amount match: ${target_amount:.2f}")
+                        break
+                except (ValueError, TypeError):
+                    continue
 
     # Doc type bonus
     doc_type = page.entities.get("doc_type", "unknown")

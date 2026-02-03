@@ -1,6 +1,6 @@
 import './LineItemCard.css'
 
-function LineItemCard({ item, matchType, isSelected, onClick }) {
+function LineItemCard({ item, matchType, isSelected, isCompleted, onClick }) {
   const pageCount = item.selected_evidence?.page_numbers?.length || 0
   const topCandidate = item.candidates?.[0]
   const score = topCandidate?.score || 0
@@ -35,11 +35,14 @@ function LineItemCard({ item, matchType, isSelected, onClick }) {
 
   return (
     <div
-      className={`line-item-card ${isSelected ? 'selected' : ''}`}
+      className={`line-item-card ${isSelected ? 'selected' : ''} ${isCompleted ? 'completed' : ''}`}
       onClick={onClick}
     >
       <div className="card-header">
-        <span className="row-index">#{item.row_index}</span>
+        <span className="row-index">
+          #{item.row_index + 1}
+          {isCompleted && <span className="completed-checkmark"> ✓</span>}
+        </span>
         <span className={`match-badge ${getMatchClass()}`}>
           {getMatchLabel()}
         </span>
@@ -56,10 +59,6 @@ function LineItemCard({ item, matchType, isSelected, onClick }) {
           <div className="employee-name">
             {item.raw.employee_first_name} {item.raw.employee_last_name}
           </div>
-        )}
-
-        {item.raw?.explanation && (
-          <div className="explanation">{item.raw.explanation}</div>
         )}
       </div>
 

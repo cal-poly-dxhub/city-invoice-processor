@@ -487,6 +487,41 @@
   transform: scale(0.95);
 }
 
+.mark-done-btn {
+  font-family: var(--font-sans);
+  font-size: 0.875rem;
+  font-weight: 600;
+  padding: 0.5rem 1.25rem;
+  border: 2px solid var(--color-excellent);
+  border-radius: 4px;
+  background: var(--color-excellent);
+  color: white;
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.mark-done-btn:hover {
+  background: #5fa963;
+  border-color: #5fa963;
+  box-shadow: 0 2px 8px rgba(76, 175, 80, 0.3);
+}
+
+.mark-done-btn:active {
+  transform: scale(0.98);
+}
+
+.mark-done-btn.completed {
+  background: var(--color-surface);
+  color: var(--color-excellent);
+  border-color: var(--color-excellent);
+}
+
+.mark-done-btn.completed:hover {
+  background: var(--color-excellent);
+  color: white;
+}
+
 .page-canvas-wrapper {
   padding: 2rem;
   display: flex;
