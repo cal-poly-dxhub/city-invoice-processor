@@ -104,6 +104,165 @@ def find_word_boxes_for_terms(
     return matched_boxes
 
 
+def find_all_word_boxes_for_term(
+    page: PageRecord,
+    term: str,
+) -> List[Dict[str, float]]:
+    """
+    Find ALL word boxes matching a term (returns all occurrences).
+
+    Similar to find_word_boxes_for_terms but returns all occurrences
+    of a single term rather than stopping at first match.
+
+    Args:
+        page: Page with word boxes
+        term: Search term (will be normalized)
+
+    Returns:
+        List of all bounding boxes matching the term
+    """
+    if not page.words or not term:
+        return []
+
+    term_normalized = normalize_name(term)
+    if not term_normalized:
+        return []
+
+    matched_boxes = []
+    for word_obj in page.words:
+        word_text = word_obj.get("text", "")
+        word_normalized = normalize_name(word_text)
+
+        # Exact match after normalization
+        if word_normalized == term_normalized:
+            matched_boxes.append({
+                "left": word_obj.get("left", 0),
+                "top": word_obj.get("top", 0),
+                "width": word_obj.get("width", 0),
+                "height": word_obj.get("height", 0),
+            })
+
+    return matched_boxes
+
+
+def calculate_proximity_score(
+    first_box: Dict[str, float],
+    last_box: Dict[str, float],
+) -> float:
+    """
+    Calculate spatial proximity score between two word boxes.
+
+    Uses normalized 0-1 coordinates to determine if first and last names
+    appear close together on the page (indicating same person).
+
+    Args:
+        first_box: Bounding box for first name {left, top, width, height}
+        last_box: Bounding box for last name {left, top, width, height}
+
+    Returns:
+        Proximity score from 0.0 (far apart) to 1.0 (very close)
+    """
+    # Calculate vertical distance
+    vertical_dist = abs(first_box['top'] - last_box['top'])
+
+    # Calculate horizontal distance between centers
+    first_center_x = first_box['left'] + first_box['width'] / 2
+    last_center_x = last_box['left'] + last_box['width'] / 2
+    horizontal_dist = abs(first_center_x - last_center_x)
+
+    # Same line (very close vertically)
+    if vertical_dist < 0.02:
+        # Names on same line - check horizontal proximity
+        if horizontal_dist < 0.15:
+            return 1.0  # Very close (adjacent)
+        elif horizontal_dist < 0.30:
+            return 0.7  # Same line, moderate distance
+        else:
+            return 0.3  # Same line but far apart
+
+    # Adjacent lines
+    elif vertical_dist < 0.04:
+        if horizontal_dist < 0.30:
+            return 0.6  # Close vertically and horizontally aligned
+        else:
+            return 0.4  # Adjacent lines but misaligned
+
+    # Nearby (within same section)
+    elif vertical_dist < 0.10:
+        if horizontal_dist < 0.30:
+            return 0.4  # Nearby and aligned
+        else:
+            return 0.2  # Nearby but misaligned
+
+    # Distant
+    else:
+        return 0.0  # Too far apart
+
+
+def find_name_pairs_with_proximity(
+    page: PageRecord,
+    first_name: str,
+    last_name: str,
+) -> List[Tuple[Dict[str, float], Dict[str, float], float]]:
+    """
+    Find all (first_box, last_box, proximity_score) pairs on page.
+
+    Finds all occurrences of first and last names, calculates proximity
+    between all combinations, and returns sorted by proximity score.
+
+    Args:
+        page: Page with word boxes
+        first_name: First name to search for (will be normalized)
+        last_name: Last name to search for (will be normalized)
+
+    Returns:
+        List of (first_box, last_box, proximity_score) tuples
+        sorted by proximity_score descending (best matches first)
+    """
+    # Find all occurrences of first and last names
+    first_boxes = find_all_word_boxes_for_term(page, first_name)
+    last_boxes = find_all_word_boxes_for_term(page, last_name)
+
+    if not first_boxes or not last_boxes:
+        return []
+
+    # Calculate proximity for all combinations
+    pairs = []
+    for first_box in first_boxes:
+        for last_box in last_boxes:
+            proximity_score = calculate_proximity_score(first_box, last_box)
+            pairs.append((first_box, last_box, proximity_score))
+
+    # Sort by proximity score descending (best matches first)
+    pairs.sort(key=lambda x: x[2], reverse=True)
+
+    return pairs
+
+
+def calculate_proximity_modifier(proximity_score: float) -> float:
+    """
+    Calculate score modifier based on spatial proximity.
+
+    Args:
+        proximity_score: Proximity score from 0.0 to 1.0
+
+    Returns:
+        Score modifier to apply:
+        - +0.25: High confidence (names very close)
+        - +0.10: Moderate confidence (names nearby)
+        - 0.00: Weak signal (names somewhat distant)
+        - -0.20: Penalty (names far apart, likely different people)
+    """
+    if proximity_score >= 0.7:
+        return +0.25  # High confidence bonus
+    elif proximity_score >= 0.4:
+        return +0.10  # Moderate confidence bonus
+    elif proximity_score >= 0.2:
+        return 0.0    # Neutral (weak signal)
+    else:
+        return -0.20  # Penalty for distant names
+
+
 def get_search_terms_for_line_item(line_item: LineItem) -> List[str]:
     """
     Extract search terms from a line item for highlighting.
@@ -159,6 +318,9 @@ def score_page_for_employee(
     - +0.20 if first name fuzzy match (ratio >= 80, catches nicknames)
     - +0.15 if first initial matches (only if no fuzzy match)
     - +0.15 if token_sort_ratio(full_name) >= 90
+    - +0.25 if first/last names very close together (proximity >= 0.7)
+    - +0.10 if first/last names moderately close (proximity >= 0.4)
+    - -0.20 if first/last names far apart (proximity < 0.2, likely different people)
     - +0.40 if amount on page matches line item amount (validation)
     - +0.10 if doc_type in {"timecard", "paystub"}
     - Cap to 1.0
@@ -181,6 +343,10 @@ def score_page_for_employee(
     matched_person = False
     best_first_name_score = 0.0
     best_first_name_rationale = None
+
+    # Proximity tracking (calculated after finding matched person)
+    proximity_modifier = 0.0
+    proximity_rationale = None
 
     for person in people:
         p_full, p_first, p_last = normalize_person_name(person)
@@ -229,6 +395,31 @@ def score_page_for_employee(
     if best_first_name_rationale:
         score += best_first_name_score
         rationale.append(best_first_name_rationale)
+
+    # Calculate proximity modifier if we have both names and word geometry
+    if li_first and li_last and page.words and matched_person:
+        name_pairs = find_name_pairs_with_proximity(page, li_first, li_last)
+
+        if name_pairs:
+            # Use best (closest) pair
+            first_box, last_box, proximity_score = name_pairs[0]
+            proximity_modifier = calculate_proximity_modifier(proximity_score)
+
+            # Build rationale message
+            if proximity_score >= 0.7:
+                proximity_rationale = f"Name proximity: very close (score={proximity_score:.2f}, bonus={proximity_modifier:+.2f})"
+            elif proximity_score >= 0.4:
+                proximity_rationale = f"Name proximity: moderate (score={proximity_score:.2f}, bonus={proximity_modifier:+.2f})"
+            elif proximity_score >= 0.2:
+                proximity_rationale = f"Name proximity: weak (score={proximity_score:.2f}, neutral)"
+            else:
+                proximity_rationale = f"Name proximity: distant (score={proximity_score:.2f}, penalty={proximity_modifier:+.2f})"
+
+    # Apply proximity modifier
+    if proximity_modifier != 0.0:
+        score += proximity_modifier
+        if proximity_rationale:
+            rationale.append(proximity_rationale)
 
     # Amount validation - strong signal when combined with last name
     if line_item.amount and matched_person:
@@ -351,7 +542,7 @@ def score_page_by_amount(
     line_item: LineItem,
     page: PageRecord,
     tolerance: float = 0.01,
-) -> Tuple[float, List[str]]:
+) -> Tuple[float, List[str], Optional[List[Dict[str, Any]]]]:
     """
     Score a page by amount matching.
 
@@ -363,21 +554,23 @@ def score_page_by_amount(
         tolerance: Tolerance for amount matching (default $0.01)
 
     Returns:
-        Tuple of (score, rationale)
+        Tuple of (score, rationale, matched_amounts)
+        - matched_amounts: List of amount dicts for highlighting (for component matches)
+                          None for exact/partial matches (use target amount instead)
     """
     score = 0.0
     rationale = []
 
     # Skip if line item has no amount
     if not line_item.amount:
-        return (0.0, ["No amount in line item"])
+        return (0.0, ["No amount in line item"], None)
 
     target_amount = float(line_item.amount)
 
     # Extract amounts from page entities
     page_amounts = page.entities.get("amounts", [])
     if not page_amounts:
-        return (0.0, ["No amounts extracted from page"])
+        return (0.0, ["No amounts extracted from page"], None)
 
     # Build list of numeric amounts with their context
     amounts_with_context = []
@@ -394,7 +587,7 @@ def score_page_by_amount(
                 continue
 
     if not amounts_with_context:
-        return (0.0, ["No valid amounts on page"])
+        return (0.0, ["No valid amounts on page"], None)
 
     # Strategy 1: Exact match (single amount equals target)
     for amt in amounts_with_context:
@@ -402,7 +595,7 @@ def score_page_by_amount(
             score = 0.95
             rationale.append(f"Exact amount match: ${amt['value']:.2f}")
             rationale.append(f"Context: {amt['context']}")
-            return (score, rationale)
+            return (score, rationale, None)  # None = use target amount for highlighting
 
     # Strategy 2: Component match (2-4 amounts sum to target)
     # Only try if we have multiple amounts and target is reasonable
@@ -421,7 +614,8 @@ def score_page_by_amount(
                         f"Component match: {' + '.join(combo_values)} = ${combo_sum:.2f}"
                     )
                     rationale.append("Multiple amounts sum to target")
-                    return (score, rationale)
+                    # Return the component amounts for highlighting
+                    return (score, rationale, list(combo))
 
     # Strategy 3: Partial match (amount is close but not exact)
     for amt in amounts_with_context:
@@ -432,9 +626,9 @@ def score_page_by_amount(
             rationale.append(
                 f"Close amount: ${amt['value']:.2f} (diff: ${diff:+.2f})"
             )
-            return (score, rationale)
+            return (score, rationale, None)  # None = use target amount for highlighting
 
-    return (0.0, ["No amount matches found"])
+    return (0.0, ["No amount matches found"], None)
 
 
 def generate_amount_based_candidates(
@@ -457,9 +651,9 @@ def generate_amount_based_candidates(
     # Score all pages by amount
     page_scores = []
     for page in pages:
-        score, rationale = score_page_by_amount(line_item, page)
+        score, rationale, matched_amounts = score_page_by_amount(line_item, page)
         if score > 0:
-            page_scores.append((page, score, rationale))
+            page_scores.append((page, score, rationale, matched_amounts))
 
     if not page_scores:
         return []
@@ -472,23 +666,45 @@ def generate_amount_based_candidates(
     # Return only the top scoring page with the best amount match
     # Component matches already capture all amounts from the same page
     if page_scores:
-        best_page, best_score, best_rationale = page_scores[0]
+        best_page, best_score, best_rationale, best_matched_amounts = page_scores[0]
 
-        # Find word boxes for the amount - use same logic as get_search_terms_for_line_item
+        # Find word boxes for the amount
         search_terms = []
-        amount_str = str(line_item.amount)
-        search_terms.append(amount_str)
-        search_terms.append(f"${amount_str}")
 
-        # Add formatted version with 2 decimal places
-        try:
-            amount_float = float(line_item.amount)
-            amount_formatted = f"{amount_float:,.2f}"
-            search_terms.append(amount_formatted)
-            search_terms.append(f"${amount_formatted}")
-        except (ValueError, TypeError):
-            pass
+        if best_matched_amounts:
+            # Component match: highlight each component amount
+            logger.debug(f"Component match: highlighting {len(best_matched_amounts)} component amounts")
+            for amt in best_matched_amounts:
+                amt_str = str(amt["value"])
+                search_terms.append(amt_str)
+                search_terms.append(f"${amt_str}")
+                if amt.get("raw"):
+                    search_terms.append(amt["raw"])
 
+                # Add formatted version with 2 decimal places
+                try:
+                    amt_float = float(amt["value"])
+                    amt_formatted = f"{amt_float:,.2f}"
+                    search_terms.append(amt_formatted)
+                    search_terms.append(f"${amt_formatted}")
+                except (ValueError, TypeError):
+                    pass
+        else:
+            # Exact or partial match: highlight the target amount
+            amount_str = str(line_item.amount)
+            search_terms.append(amount_str)
+            search_terms.append(f"${amount_str}")
+
+            # Add formatted version with 2 decimal places
+            try:
+                amount_float = float(line_item.amount)
+                amount_formatted = f"{amount_float:,.2f}"
+                search_terms.append(amount_formatted)
+                search_terms.append(f"${amount_formatted}")
+            except (ValueError, TypeError):
+                pass
+
+        logger.debug(f"Amount highlighting search terms: {search_terms}")
         highlights = {
             best_page.page_number: find_word_boxes_for_terms(best_page, search_terms)
         }
@@ -712,11 +928,14 @@ def generate_candidates_for_line_item(
 
         # Find highlights for strong matches
         search_terms = get_search_terms_for_line_item(line_item)
+        logger.debug(f"Row {line_item.row_index} ({line_item.budget_item}): search_terms={search_terms}")
         highlights = {}
         for page in strong_matches:
             boxes = find_word_boxes_for_terms(page, search_terms)
+            logger.debug(f"Row {line_item.row_index}: page {page.page_number} found {len(boxes)} boxes")
             if boxes:
                 highlights[page.page_number] = boxes
+        logger.debug(f"Row {line_item.row_index}: total highlights for {len(strong_matches)} pages: {len(highlights)} pages with boxes")
 
         candidates.append(
             CandidateEvidenceSet(

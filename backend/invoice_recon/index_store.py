@@ -223,7 +223,7 @@ class IndexStore:
 
         cursor.execute(
             """
-            SELECT doc_id, page_number, text_source, text, entities_json
+            SELECT doc_id, page_number, text_source, text, entities_json, words_json
             FROM pages
             WHERE doc_id = ?
             ORDER BY page_number
@@ -237,6 +237,7 @@ class IndexStore:
         pages = []
         for row in rows:
             entities = json.loads(row[4])
+            words = json.loads(row[5]) if row[5] else []
             pages.append(
                 PageRecord(
                     doc_id=row[0],
@@ -244,6 +245,7 @@ class IndexStore:
                     text_source=row[2],
                     text=row[3],
                     entities=entities,
+                    words=words,
                 )
             )
 

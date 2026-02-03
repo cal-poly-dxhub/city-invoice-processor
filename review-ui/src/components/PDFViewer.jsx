@@ -82,10 +82,17 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
       // Map budget items to their actual PDF filenames
       const filenameMap = {
         'Salary': 'Salary.pdf',
+        'Fringe': 'Fringe.pdf',
+        'Contractual Service': 'Contractual_Service.pdf',
+        'Equipment': 'Equipment.pdf',
+        'Insurance': 'Insurance.pdf',
+        'Travel and Conferences': 'Travel_and_Conferences.pdf',
+        'Space Rental/Occupancy Costs': 'Space_Rental_Occupancy_Costs.pdf',
+        'Telecommunications': 'Telecommunications.pdf',
         'Utilities': 'Utilities.pdf',
         'Supplies': 'Supplies.pdf',
-        'Telecommunications': 'Telecommunications.pdf',
-        'Space Rental/Occupancy Costs': 'Space_Rental_Occupancy_Costs.pdf',
+        'Other': 'Other.pdf',
+        'Indirect Costs': 'Indirect_Costs.pdf',
       }
 
       const filename = filenameMap[doc.budget_item]
