@@ -59,7 +59,10 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
 
   useEffect(() => {
     if (pdfDoc) {
-      renderPages()
+      // Use requestAnimationFrame to ensure canvas is fully laid out before rendering
+      requestAnimationFrame(() => {
+        renderPages()
+      })
     }
   }, [pdfDoc, pageNumbers, pageRotations, currentPageIdx, viewMode, allPagesCurrentPage])
 
@@ -125,42 +128,79 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
     }
 
     const canvas = canvasRefs.current[pageNum]
-    if (!canvas) return
+    const container = containerRefs.current[pageNum]
+
+    // Wait for canvas to be properly mounted with dimensions
+    if (!canvas || !container) {
+      console.log(`PDFViewer: Canvas or container not ready for page ${pageNum}`)
+      return
+    }
+
+    // Additional safety check: ensure canvas is in DOM and has layout
+    if (canvas.offsetParent === null) {
+      console.log(`PDFViewer: Canvas for page ${pageNum} not yet in layout, skipping render`)
+      return
+    }
+
+    // Ensure canvas has been laid out and has dimensions
+    // On first render, offsetWidth/Height might be 0
+    if (canvas.offsetWidth === 0 || canvas.offsetHeight === 0) {
+      console.log(`PDFViewer: Canvas for page ${pageNum} has zero dimensions (${canvas.offsetWidth}x${canvas.offsetHeight}), will retry`)
+      // Retry after a short delay to allow layout to complete
+      setTimeout(() => renderPages(), 50)
+      return
+    }
 
     try {
       const page = await pdfDoc.getPage(pageNum)
 
       // Store the page's inherent rotation in ref (immediate, no async state update)
-      pageInherentRotations.current[pageNum] = page.rotate || 0
+      const inherentRotation = page.rotate || 0
+      pageInherentRotations.current[pageNum] = inherentRotation
 
       // Apply user-selected rotation (default to 0 if not set)
       // This renders the PDF at the user's preferred orientation
+      // IMPORTANT: Must add inherent rotation + user rotation for correct display
       const userRotation = pageRotations[pageNum] || 0
-      const viewport = page.getViewport({ scale: 1.5, rotation: userRotation })
+      const totalRotation = inherentRotation + userRotation
+      const viewport = page.getViewport({ scale: 1.5, rotation: totalRotation })
+
+      console.log(`PDFViewer: Rendering page ${pageNum}, inherent=${inherentRotation}°, user=${userRotation}°, total=${totalRotation}°, viewport=${viewport.width}x${viewport.height}`)
+
+      const context = canvas.getContext('2d')
+
+      // Save current transform before any operations
+      context.save()
+
+      // Update canvas dimensions FIRST, before clearing
+      canvas.width = viewport.width
+      canvas.height = viewport.height
+
+      // Clear the canvas with the NEW dimensions
+      context.clearRect(0, 0, canvas.width, canvas.height)
+
+      // Reset any transforms that might persist
+      context.setTransform(1, 0, 0, 1, 0, 0)
 
       // Store viewport dimensions for this page (for highlight calculations)
-      setViewportDimensions({
-        ...viewportDimensions,
+      setViewportDimensions(prev => ({
+        ...prev,
         [pageNum]: {
           width: viewport.width,
           height: viewport.height
         }
-      })
-
-      const context = canvas.getContext('2d')
-
-      // Clear the canvas before re-rendering
-      context.clearRect(0, 0, canvas.width, canvas.height)
-
-      // Update canvas dimensions for the rotated viewport
-      canvas.width = viewport.width
-      canvas.height = viewport.height
+      }))
 
       // Render PDF content
       await page.render({
         canvasContext: context,
         viewport: viewport
       }).promise
+
+      // Restore context state
+      context.restore()
+
+      console.log(`PDFViewer: Successfully rendered page ${pageNum}`)
 
       // Get normalized (0-1) highlights from backend
       // Store them in normalized form so they scale dynamically
@@ -351,7 +391,7 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
     <div className="pdf-viewer">
       <div className="viewer-header">
         <div className="item-summary">
-          <h2 className="item-title">Row #{item.row_index}: {item.budget_item}</h2>
+          <h2 className="item-title">Row #{item.row_index + 1}: {item.budget_item}</h2>
           {item.raw?.amount && item.raw.amount > 0 && (
             <div className="item-amount">${parseFloat(item.raw.amount).toFixed(2)}</div>
           )}
@@ -587,10 +627,12 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
                       />
                       <div className="highlights-overlay">
                         {highlights[pageNum]?.map((rect, idx) => {
-                          // Transform highlight coordinates based on user-selected rotation
+                          // Transform highlight coordinates based on total rotation (inherent + user)
                           // Backend coordinates are in original (0° rotation) mediabox space
+                          const inherentRotation = pageInherentRotations.current[pageNum] || 0
                           const userRotation = pageRotations[pageNum] || 0
-                          const transformedRect = transformHighlight(rect, userRotation)
+                          const totalRotation = inherentRotation + userRotation
+                          const transformedRect = transformHighlight(rect, totalRotation)
 
                           // Get viewport dimensions for this page
                           const viewport = viewportDimensions[pageNum]
