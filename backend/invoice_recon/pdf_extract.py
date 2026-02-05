@@ -8,7 +8,7 @@ import fitz  # PyMuPDF
 from invoice_recon.config import Config
 from invoice_recon.textract_text import extract_text_from_image_bytes, extract_text_and_words_from_image_bytes
 from invoice_recon.bedrock_vision import detect_table_page
-from invoice_recon.table_parser import TableStructure
+from invoice_recon.table_parser import TableStructure, TableCell
 
 logger = logging.getLogger(__name__)
 
@@ -99,13 +99,195 @@ def extract_page_text_and_words_pymupdf(page) -> Tuple[str, List[Dict]]:
 
 
 def render_page_to_png_bytes(page, dpi: int = 200) -> bytes:
-    """Render a PyMuPDF page to PNG bytes."""
+    """
+    Render a PyMuPDF page to PNG bytes in the original (unrotated) orientation.
+
+    IMPORTANT: Renders the page at 0° rotation (ignoring inherent rotation) so that
+    Textract returns coordinates in the same coordinate space as PyMuPDF's get_text("words"),
+    which uses the original mediabox dimensions.
+    """
     try:
+        # Save original rotation
+        original_rotation = page.rotation
+
+        # Temporarily set rotation to 0 to render in original orientation
+        page.set_rotation(0)
+
+        # Render the page
         pixmap = page.get_pixmap(dpi=dpi)
-        return pixmap.tobytes("png")
+        png_bytes = pixmap.tobytes("png")
+
+        # Restore original rotation
+        page.set_rotation(original_rotation)
+
+        return png_bytes
     except Exception as e:
         logger.error(f"Page rendering failed: {e}")
         return b""
+
+
+def _is_pymupdf_table_sufficient(cell_data: List[List[str]]) -> bool:
+    """
+    Validate if PyMuPDF table extraction is sufficient.
+
+    Criteria:
+    - At least MIN_TABLE_ROWS rows
+    - At least MIN_TABLE_CELLS total cells
+    - At least MIN_TABLE_CELL_COVERAGE of cells have text
+
+    Args:
+        cell_data: 2D array of cell text from PyMuPDF
+
+    Returns:
+        True if table quality is sufficient, False otherwise
+    """
+    if not cell_data or len(cell_data) < Config.MIN_TABLE_ROWS:
+        return False
+
+    total_cells = sum(len(row) for row in cell_data)
+    if total_cells < Config.MIN_TABLE_CELLS:
+        return False
+
+    non_empty_cells = sum(
+        1 for row in cell_data
+        for cell in row
+        if cell and cell.strip()
+    )
+
+    coverage = non_empty_cells / total_cells if total_cells > 0 else 0
+    if coverage < Config.MIN_TABLE_CELL_COVERAGE:
+        return False
+
+    return True
+
+
+def _convert_pymupdf_table_to_structure(
+    pymupdf_table,
+    cell_data: List[List[str]],
+    table_idx: int,
+    page
+) -> TableStructure:
+    """
+    Convert PyMuPDF Table to our TableStructure format.
+
+    Challenges:
+    - PyMuPDF uses PDF points, need to normalize to 0-1
+    - No row_span/col_span, default to 1
+    - Cell ordering may differ from Textract
+
+    Args:
+        pymupdf_table: PyMuPDF Table object
+        cell_data: 2D array of cell text
+        table_idx: Table index for unique ID
+        page: PyMuPDF page object
+
+    Returns:
+        TableStructure with normalized coordinates
+    """
+    # Get page dimensions for normalization
+    mediabox = page.mediabox
+    page_width = mediabox.width
+    page_height = mediabox.height
+
+    # Get table bbox (in PDF points)
+    table_bbox_points = pymupdf_table.bbox  # (x0, y0, x1, y1)
+
+    # Normalize table bbox to 0-1
+    table_bbox = {
+        "left": table_bbox_points[0] / page_width,
+        "top": table_bbox_points[1] / page_height,
+        "width": (table_bbox_points[2] - table_bbox_points[0]) / page_width,
+        "height": (table_bbox_points[3] - table_bbox_points[1]) / page_height,
+    }
+
+    # Convert cells
+    cells = []
+    cell_bboxes = pymupdf_table.cells  # List of cell bboxes in PDF points
+
+    for row_idx, row in enumerate(cell_data, start=1):  # 1-based
+        for col_idx, cell_text in enumerate(row, start=1):  # 1-based
+            # Calculate cell index in flat list
+            cell_flat_idx = (row_idx - 1) * len(row) + (col_idx - 1)
+
+            if cell_flat_idx < len(cell_bboxes):
+                cell_bbox_points = cell_bboxes[cell_flat_idx]  # (x0, y0, x1, y1)
+
+                # Normalize cell bbox to 0-1
+                cell_bbox = {
+                    "left": cell_bbox_points[0] / page_width,
+                    "top": cell_bbox_points[1] / page_height,
+                    "width": (cell_bbox_points[2] - cell_bbox_points[0]) / page_width,
+                    "height": (cell_bbox_points[3] - cell_bbox_points[1]) / page_height,
+                }
+            else:
+                # Fallback: empty bbox if index out of range
+                cell_bbox = {"left": 0, "top": 0, "width": 0, "height": 0}
+
+            cells.append(TableCell(
+                row_index=row_idx,
+                col_index=col_idx,
+                row_span=1,  # PyMuPDF doesn't detect merged cells
+                col_span=1,
+                text=cell_text.strip() if cell_text else "",
+                bbox=cell_bbox,
+                word_ids=[],  # PyMuPDF doesn't provide word IDs
+            ))
+
+    return TableStructure(
+        table_id=f"pymupdf-table-{table_idx}",
+        cells=cells,
+        row_count=len(cell_data),
+        col_count=max(len(row) for row in cell_data) if cell_data else 0,
+        bbox=table_bbox,
+    )
+
+
+def extract_tables_pymupdf(page) -> List[TableStructure]:
+    """
+    Extract table structures using PyMuPDF's find_tables().
+
+    Returns:
+        List of TableStructure objects (empty if no tables found or quality insufficient)
+    """
+    try:
+        # Find tables using PyMuPDF
+        table_finder = page.find_tables(
+            vertical_strategy=Config.PYMUPDF_TABLE_STRATEGY,
+            horizontal_strategy=Config.PYMUPDF_TABLE_STRATEGY
+        )
+
+        if not table_finder.tables:
+            logger.debug("PyMuPDF: No tables found")
+            return []
+
+        tables = []
+        for idx, pymupdf_table in enumerate(table_finder.tables):
+            # Extract 2D array of cell text
+            cell_data = pymupdf_table.extract()  # Returns List[List[str]]
+
+            # Validate table quality
+            if not _is_pymupdf_table_sufficient(cell_data):
+                logger.debug(
+                    f"PyMuPDF table {idx}: Insufficient quality "
+                    f"(rows={len(cell_data)}, cells={sum(len(r) for r in cell_data)}), skipping"
+                )
+                continue
+
+            # Convert to TableStructure
+            table_struct = _convert_pymupdf_table_to_structure(
+                pymupdf_table,
+                cell_data,
+                idx,
+                page
+            )
+            tables.append(table_struct)
+
+        logger.info(f"PyMuPDF: Extracted {len(tables)} valid tables")
+        return tables
+
+    except Exception as e:
+        logger.warning(f"PyMuPDF table extraction failed: {e}")
+        return []
 
 
 def extract_page_with_fallback(
@@ -116,7 +298,9 @@ def extract_page_with_fallback(
 
     Strategy:
     0. If TABLE_DETECTION_ENABLED, use Bedrock vision to detect table pages
-       - If detected as table, skip PyMuPDF and use Textract directly
+       - If detected as table, try PyMuPDF table extraction first
+       - If PyMuPDF succeeds, use it (free, fast)
+       - Otherwise fall back to Textract (paid, slower)
     1. Try PyMuPDF first for text + geometry (fast, free)
     2. If text is sufficient, use PyMuPDF geometry
     3. If text insufficient, fall back to Textract (slow, paid)
@@ -127,10 +311,10 @@ def extract_page_with_fallback(
 
     Returns:
         Tuple of (extracted_text, text_source, word_boxes, tables)
-        - text_source is "pymupdf" or "textract" or "textract_table"
+        - text_source is "pymupdf", "pymupdf_table", "textract", or "textract_table"
         - word_boxes is a list of dicts with keys: text, left, top, width, height
           (normalized 0-1 coordinates)
-        - tables is a list of TableStructure objects (empty for PyMuPDF)
+        - tables is a list of TableStructure objects
     """
     # Step 0: Check if table detection is enabled and detect tables
     if Config.TABLE_DETECTION_ENABLED and Config.TEXTRACT_MODE != "never":
@@ -139,11 +323,27 @@ def extract_page_with_fallback(
         if png_bytes:
             is_table = detect_table_page(png_bytes)
             if is_table:
-                logger.info(
-                    f"Page {page_number}: Detected as table page, using Textract directly"
-                )
-                textract_text, word_boxes, tables = extract_text_and_words_from_image_bytes(png_bytes)
-                return (textract_text, "textract_table", word_boxes, tables)
+                logger.info(f"Page {page_number}: Detected as table, trying PyMuPDF first")
+
+                # NEW: Try PyMuPDF table extraction first
+                pymupdf_tables = extract_tables_pymupdf(page)
+
+                if pymupdf_tables:
+                    # PyMuPDF succeeded, use it
+                    logger.info(
+                        f"Page {page_number}: PyMuPDF extracted {len(pymupdf_tables)} tables, "
+                        "using PyMuPDF (skipping Textract)"
+                    )
+                    pymupdf_text, pymupdf_word_boxes = extract_page_text_and_words_pymupdf(page)
+                    return (pymupdf_text, "pymupdf_table", pymupdf_word_boxes, pymupdf_tables)
+                else:
+                    # PyMuPDF failed, fall back to Textract
+                    logger.info(
+                        f"Page {page_number}: PyMuPDF table extraction insufficient, "
+                        "falling back to Textract"
+                    )
+                    textract_text, word_boxes, tables = extract_text_and_words_from_image_bytes(png_bytes)
+                    return (textract_text, "textract_table", word_boxes, tables)
         else:
             logger.warning(f"Page {page_number}: Failed to render for table detection")
 

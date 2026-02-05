@@ -22,6 +22,13 @@ class LineItem(BaseModel):
     raw: Dict[str, Any] = Field(default_factory=dict)
 
 
+class PageWordData(BaseModel):
+    """Word-level data for a single page (for search highlighting)."""
+
+    words: List[Dict[str, Any]] = Field(default_factory=list)  # Word bounding boxes with text, left, top, width, height
+    text: str = ""  # Full page text for fallback search
+
+
 class DocumentRef(BaseModel):
     """Reference to a PDF document."""
 
@@ -30,6 +37,7 @@ class DocumentRef(BaseModel):
     path: str
     file_sha256: str
     page_count: int
+    pages_data: Dict[int, PageWordData] = Field(default_factory=dict)  # Page number -> word data for search
 
 
 class PageRecord(BaseModel):

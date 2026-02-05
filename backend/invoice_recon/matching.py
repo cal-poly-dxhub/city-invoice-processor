@@ -644,18 +644,8 @@ def score_page_by_amount(
                     # Return the component amounts for highlighting
                     return (score, rationale, list(combo))
 
-    # Strategy 3: Partial match (amount is close but not exact)
-    for amt in amounts_with_context:
-        # Within 10% of target
-        if target_amount > 0 and abs(amt["value"] - target_amount) / target_amount < 0.10:
-            score = 0.50
-            diff = amt["value"] - target_amount
-            rationale.append(
-                f"Close amount: ${amt['value']:.2f} (diff: ${diff:+.2f})"
-            )
-            return (score, rationale, None)  # None = use target amount for highlighting
-
-    return (0.0, ["No amount matches found"], None)
+    # No match found within tolerance - don't return low-quality partial matches
+    return (0.0, ["No amount matches found within ±$0.01"], None)
 
 
 def generate_amount_based_candidates(

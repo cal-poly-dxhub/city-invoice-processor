@@ -14,10 +14,12 @@ from invoice_recon.models import (
     LineItem,
     LineItemOutput,
     NavigationGroup,
+    PageWordData,
     ReconciliationOutput,
     SelectedEvidence,
     UserEdits,
 )
+from invoice_recon.index_store import IndexStore
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +88,17 @@ def write_reconciliation_output(
         pdf_dir=str(pdf_dir),
         documents=pdf_mappings,
     )
+
+    # Populate pages_data for each document (for search highlighting)
+    index_store = IndexStore(artifacts_dir / "index.sqlite")
+    for doc_ref in documents:
+        pages = index_store.get_all_pages_for_document(doc_ref.doc_id)
+        for page in pages:
+            doc_ref.pages_data[page.page_number] = PageWordData(
+                words=page.words,
+                text=page.text,
+            )
+        logger.info(f"Exported {len(pages)} pages of word data for {doc_ref.doc_id}")
 
     # Build line item outputs
     line_item_outputs = []

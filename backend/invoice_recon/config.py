@@ -33,6 +33,12 @@ class Config:
     # Table Detection
     TABLE_DETECTION_ENABLED: bool = os.getenv("TABLE_DETECTION_ENABLED", "false").lower() == "true"
 
+    # PyMuPDF Table Extraction (quality thresholds)
+    MIN_TABLE_ROWS: int = int(os.getenv("MIN_TABLE_ROWS", "2"))
+    MIN_TABLE_CELLS: int = int(os.getenv("MIN_TABLE_CELLS", "4"))
+    MIN_TABLE_CELL_COVERAGE: float = float(os.getenv("MIN_TABLE_CELL_COVERAGE", "0.5"))
+    PYMUPDF_TABLE_STRATEGY: str = os.getenv("PYMUPDF_TABLE_STRATEGY", "lines")  # lines, text, lines_strict
+
     # Processing
     MAX_WORKERS: int = int(os.getenv("MAX_WORKERS", "3"))
 

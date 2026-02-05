@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import * as pdfjsLib from 'pdfjs-dist'
+import SearchBar from './SearchBar'
 import './PDFViewer.css'
 
 // Set up PDF.js worker
@@ -12,11 +13,14 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
   const [highlights, setHighlights] = useState({})
   const [selectedCandidateIdx, setSelectedCandidateIdx] = useState(0) // Track which candidate to display
   const [currentPageIdx, setCurrentPageIdx] = useState(0) // Track which page in the group is currently displayed
-  const [viewMode, setViewMode] = useState('group') // 'group' or 'all' - determines which pages to show
+  const [viewMode, setViewMode] = useState('group') // 'group', 'all', or 'search' - determines which pages to show
   const [allPagesCurrentPage, setAllPagesCurrentPage] = useState(1) // Track current page when viewing all pages (1-indexed)
+  const [searchPageIdx, setSearchPageIdx] = useState(0) // Track current page index in search results
   const [pageRotations, setPageRotations] = useState({}) // Track user-applied rotation per page (0, 90, 180, 270)
   const [viewportDimensions, setViewportDimensions] = useState({}) // Store viewport dimensions for each page
   const [userEditedCandidates, setUserEditedCandidates] = useState({}) // Track user modifications: { [candidateKey]: { ...candidate, page_numbers: [...], edited: true } }
+  const [searchQuery, setSearchQuery] = useState('') // User's search query
+  const [searchResults, setSearchResults] = useState({}) // Search results: { page_number: [boxes] }
   const pageInherentRotations = useRef({}) // Track PDF's inherent rotation
   const canvasRefs = useRef({})
   const containerRefs = useRef({})
@@ -39,6 +43,9 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
     ? selectedCandidate.page_numbers || []
     : item.selected_evidence?.page_numbers || []
 
+  // Get search result pages (sorted)
+  const searchResultPages = Object.keys(searchResults).map(n => parseInt(n)).sort((a, b) => a - b)
+
   useEffect(() => {
     if (!doc) return
 
@@ -48,6 +55,10 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
       setCurrentPageIdx(0)
       setViewMode('group')
       setAllPagesCurrentPage(1)
+      setSearchQuery('')
+      setSearchResults({})
+      setSearchPageIdx(0)
+      setHighlights({}) // Clear old highlights to prevent stale data
     }
     loadPDF()
   }, [item.row_id])
@@ -64,15 +75,11 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
         renderPages()
       })
     }
-  }, [pdfDoc, pageNumbers, pageRotations, currentPageIdx, viewMode, allPagesCurrentPage])
+  }, [pdfDoc, pageNumbers, pageRotations, currentPageIdx, viewMode, allPagesCurrentPage, searchPageIdx, searchResults])
 
-  // Re-render highlights when selected candidate changes
+  // Reset to first page when candidate changes
+  // Note: highlights will be updated by renderPages() after the page renders and inherent rotation is captured
   useEffect(() => {
-    if (pdfDoc && pageNumbers.length > 0) {
-      const backendHighlights = getHighlightsFromCandidates()
-      setHighlights(backendHighlights)
-    }
-    // Reset to first page when candidate changes
     setCurrentPageIdx(0)
   }, [selectedCandidateIdx])
 
@@ -123,8 +130,13 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
     if (viewMode === 'group') {
       if (pageNumbers.length === 0) return
       pageNum = pageNumbers[currentPageIdx]
-    } else {
+    } else if (viewMode === 'all') {
       pageNum = allPagesCurrentPage
+    } else if (viewMode === 'search') {
+      if (searchResultPages.length === 0) return
+      pageNum = searchResultPages[searchPageIdx]
+    } else {
+      pageNum = 1
     }
 
     const canvas = canvasRefs.current[pageNum]
@@ -132,13 +144,16 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
 
     // Wait for canvas to be properly mounted with dimensions
     if (!canvas || !container) {
-      console.log(`PDFViewer: Canvas or container not ready for page ${pageNum}`)
+      console.log(`PDFViewer: Canvas or container not ready for page ${pageNum}, will retry`)
+      // Retry after a delay to allow React to mount the elements
+      setTimeout(() => renderPages(), 100)
       return
     }
 
     // Additional safety check: ensure canvas is in DOM and has layout
     if (canvas.offsetParent === null) {
-      console.log(`PDFViewer: Canvas for page ${pageNum} not yet in layout, skipping render`)
+      console.log(`PDFViewer: Canvas for page ${pageNum} not yet in layout, will retry`)
+      setTimeout(() => renderPages(), 100)
       return
     }
 
@@ -147,25 +162,26 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
     if (canvas.offsetWidth === 0 || canvas.offsetHeight === 0) {
       console.log(`PDFViewer: Canvas for page ${pageNum} has zero dimensions (${canvas.offsetWidth}x${canvas.offsetHeight}), will retry`)
       // Retry after a short delay to allow layout to complete
-      setTimeout(() => renderPages(), 50)
+      setTimeout(() => renderPages(), 100)
       return
     }
 
     try {
       const page = await pdfDoc.getPage(pageNum)
 
-      // Store the page's inherent rotation in ref (immediate, no async state update)
+      // Store the page's inherent rotation in ref
       const inherentRotation = page.rotate || 0
       pageInherentRotations.current[pageNum] = inherentRotation
 
-      // Apply user-selected rotation (default to 0 if not set)
-      // This renders the PDF at the user's preferred orientation
-      // IMPORTANT: Must add inherent rotation + user rotation for correct display
+      // Render PDF ignoring inherent rotation (at 0° by default) to match backend coordinates
+      // Backend extracts coordinates from the unrotated page (both PyMuPDF and Textract)
+      // PDF.js getViewport() includes inherent rotation by default, so we counteract it
+      // by passing negative inherent rotation, then add user rotation
       const userRotation = pageRotations[pageNum] || 0
-      const totalRotation = inherentRotation + userRotation
+      const totalRotation = -inherentRotation + userRotation
       const viewport = page.getViewport({ scale: 1.5, rotation: totalRotation })
 
-      console.log(`PDFViewer: Rendering page ${pageNum}, inherent=${inherentRotation}°, user=${userRotation}°, total=${totalRotation}°, viewport=${viewport.width}x${viewport.height}`)
+      console.log(`PDFViewer: Rendering page ${pageNum}, inherent=${inherentRotation}° (counteracted), user=${userRotation}°, total=${totalRotation}°, viewport=${viewport.width}x${viewport.height}`)
 
       const context = canvas.getContext('2d')
 
@@ -205,6 +221,7 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
       // Get normalized (0-1) highlights from backend
       // Store them in normalized form so they scale dynamically
       const backendHighlights = getHighlightsFromCandidates()
+      console.log(`PDFViewer: Setting highlights for page ${pageNum}:`, backendHighlights[pageNum]?.length || 0, 'boxes')
       setHighlights(backendHighlights)
     } catch (err) {
       console.error(`Error rendering page ${pageNum}:`, err)
@@ -231,6 +248,72 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
     return candidateHighlights
   }
 
+  const performSearch = (query) => {
+    // Clear search results if query is too short
+    if (!query || query.length < 2) {
+      setSearchResults({})
+      // If we were in search mode, go back to group mode
+      if (viewMode === 'search') {
+        setViewMode('group')
+      }
+      return
+    }
+
+    // Check if document has pages_data
+    if (!doc || !doc.pages_data) {
+      console.log('PDFViewer: No pages_data available for search')
+      setSearchResults({})
+      return
+    }
+
+    const normalizedQuery = query.toLowerCase()
+    const results = {}
+    let totalMatches = 0
+
+    // Search through all pages in the document
+    Object.entries(doc.pages_data).forEach(([pageNumStr, pageData]) => {
+      const pageNum = parseInt(pageNumStr)
+
+      if (!pageData.words || pageData.words.length === 0) {
+        return
+      }
+
+      // Filter words that contain the search query (substring match)
+      const matchedBoxes = pageData.words
+        .filter(word => word.text && word.text.toLowerCase().includes(normalizedQuery))
+        .map(word => ({
+          left: word.left,
+          top: word.top,
+          width: word.width,
+          height: word.height
+        }))
+
+      if (matchedBoxes.length > 0) {
+        results[pageNum] = matchedBoxes
+        totalMatches += matchedBoxes.length
+      }
+    })
+
+    console.log(`PDFViewer: Search for "${query}" found ${totalMatches} matches on ${Object.keys(results).length} pages`)
+    setSearchResults(results)
+
+    // Switch to search mode if we have results
+    if (Object.keys(results).length > 0) {
+      setViewMode('search')
+      setSearchPageIdx(0) // Start at first search result page
+    } else if (viewMode === 'search') {
+      // No results, go back to group mode
+      setViewMode('group')
+    }
+  }
+
+  // Effect to perform search when query changes
+  useEffect(() => {
+    if (doc && doc.pages_data) {
+      performSearch(searchQuery)
+    }
+  }, [searchQuery, doc])
+
   const getHighlightSummary = () => {
     // Return a summary of what's being highlighted
     const summary = []
@@ -247,6 +330,26 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
     return summary
   }
 
+  const getSearchResultSummary = () => {
+    // Build search result summary for display
+    if (!searchQuery || searchQuery.length < 2) {
+      return null
+    }
+
+    const pageNums = Object.keys(searchResults).map(n => parseInt(n)).sort((a, b) => a - b)
+    const totalMatches = Object.values(searchResults).reduce((sum, boxes) => sum + boxes.length, 0)
+
+    if (pageNums.length === 0) {
+      return `No matches found for "${searchQuery}"`
+    }
+
+    const pagesList = pageNums.length <= 5
+      ? pageNums.join(', ')
+      : `${pageNums.slice(0, 5).join(', ')}, ...`
+
+    return `Found on pages: ${pagesList} (${totalMatches} matches)`
+  }
+
   const getMatchClass = () => {
     if (matchType === 'amount' || matchType === 'cross-page') return 'excellent'
     if (matchType === 'low-confidence') return 'poor'
@@ -260,7 +363,7 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
     // Rotation is in degrees: 0, 90, 180, 270
     switch (rotation) {
       case 90:
-        // 90° clockwise: (x,y) -> (1-y-h, x), dimensions swap
+        // 90° clockwise: rectangle top-left (x,y) -> (1-y-height, x)
         return {
           left: 1 - rect.top - rect.height,
           top: rect.left,
@@ -268,7 +371,7 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
           height: rect.width
         }
       case 180:
-        // 180°: (x,y) -> (1-x-w, 1-y-h)
+        // 180°: (x,y) -> (1-x-width, 1-y-height)
         return {
           left: 1 - rect.left - rect.width,
           top: 1 - rect.top - rect.height,
@@ -276,7 +379,7 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
           height: rect.height
         }
       case 270:
-        // 270° clockwise (90° counter-clockwise): (x,y) -> (y, 1-x-w), dimensions swap
+        // 270° clockwise (90° counter-clockwise): rectangle top-left (x,y) -> (y, 1-x-width)
         return {
           left: rect.top,
           top: 1 - rect.left - rect.width,
@@ -303,17 +406,21 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
   const goToPreviousPage = () => {
     if (viewMode === 'group') {
       setCurrentPageIdx(prev => Math.max(0, prev - 1))
-    } else {
+    } else if (viewMode === 'all') {
       setAllPagesCurrentPage(prev => Math.max(1, prev - 1))
+    } else if (viewMode === 'search') {
+      setSearchPageIdx(prev => Math.max(0, prev - 1))
     }
   }
 
   const goToNextPage = () => {
     if (viewMode === 'group') {
       setCurrentPageIdx(prev => Math.min(pageNumbers.length - 1, prev + 1))
-    } else {
+    } else if (viewMode === 'all') {
       const totalPages = doc?.page_count || 1
       setAllPagesCurrentPage(prev => Math.min(totalPages, prev + 1))
+    } else if (viewMode === 'search') {
+      setSearchPageIdx(prev => Math.min(searchResultPages.length - 1, prev + 1))
     }
   }
 
@@ -323,10 +430,15 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
       const currentGroupPage = pageNumbers[currentPageIdx]
       setAllPagesCurrentPage(currentGroupPage || 1)
       setViewMode('all')
-    } else {
+    } else if (viewMode === 'all') {
       // Switching to group view: find the closest group page
       const closestIdx = pageNumbers.findIndex(p => p >= allPagesCurrentPage)
       setCurrentPageIdx(closestIdx >= 0 ? closestIdx : 0)
+      setViewMode('group')
+    } else if (viewMode === 'search') {
+      // Switching from search view: clear search and go to group view
+      setSearchQuery('')
+      setSearchResults({})
       setViewMode('group')
     }
   }
@@ -493,15 +605,30 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
           <div className="page-stack">
             {(() => {
               // Determine page number based on view mode
-              const pageNum = viewMode === 'group'
-                ? (pageNumbers.length > 0 ? pageNumbers[currentPageIdx] : 1)
-                : allPagesCurrentPage
+              let pageNum
+              if (viewMode === 'group') {
+                pageNum = pageNumbers.length > 0 ? pageNumbers[currentPageIdx] : 1
+              } else if (viewMode === 'all') {
+                pageNum = allPagesCurrentPage
+              } else if (viewMode === 'search') {
+                pageNum = searchResultPages.length > 0 ? searchResultPages[searchPageIdx] : 1
+              } else {
+                pageNum = 1
+              }
 
               const totalPages = doc?.page_count || 1
-              const isFirstPage = viewMode === 'group' ? currentPageIdx === 0 : allPagesCurrentPage === 1
+              const isFirstPage = viewMode === 'group'
+                ? currentPageIdx === 0
+                : viewMode === 'all'
+                  ? allPagesCurrentPage === 1
+                  : searchPageIdx === 0
               const isLastPage = viewMode === 'group'
                 ? currentPageIdx === pageNumbers.length - 1
-                : allPagesCurrentPage === totalPages
+                : viewMode === 'all'
+                  ? allPagesCurrentPage === totalPages
+                  : searchPageIdx === searchResultPages.length - 1
+
+              console.log(`PDFViewer: Rendering page ${pageNum}, viewMode=${viewMode}, highlights available for pages:`, Object.keys(highlights))
 
               return (
                 <div key={pageNum} className="page-container">
@@ -518,15 +645,28 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
                           ({allPagesCurrentPage} / {totalPages} total)
                         </span>
                       )}
+                      {viewMode === 'search' && (
+                        <span className="page-counter">
+                          ({searchPageIdx + 1} / {searchResultPages.length} results)
+                        </span>
+                      )}
                     </div>
+
+                    {doc && doc.pages_data && (
+                      <SearchBar
+                        query={searchQuery}
+                        onQueryChange={setSearchQuery}
+                        resultSummary={null}
+                      />
+                    )}
 
                     <div className="view-mode-toggle">
                       <button
-                        className={`mode-btn ${viewMode === 'group' ? 'active' : ''}`}
+                        className={`mode-btn ${viewMode === 'group' ? 'active' : ''} ${viewMode === 'all' ? 'active' : ''} ${viewMode === 'search' ? 'active' : ''}`}
                         onClick={toggleViewMode}
                         title="Switch view mode"
                       >
-                        {viewMode === 'group' ? 'Group View' : 'All Pages'}
+                        {viewMode === 'group' ? 'Group View' : viewMode === 'all' ? 'All Pages' : 'Search Results'}
                       </button>
                     </div>
 
@@ -564,7 +704,7 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
                       </div>
                     )}
 
-                    {((viewMode === 'group' && pageNumbers.length > 1) || viewMode === 'all') && (
+                    {((viewMode === 'group' && pageNumbers.length > 1) || viewMode === 'all' || (viewMode === 'search' && searchResultPages.length > 1)) && (
                       <div className="page-navigation">
                         <button
                           className="nav-btn nav-btn-prev"
@@ -626,13 +766,21 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
                         className="page-canvas"
                       />
                       <div className="highlights-overlay">
-                        {highlights[pageNum]?.map((rect, idx) => {
-                          // Transform highlight coordinates based on total rotation (inherent + user)
+                        {/* Render candidate highlights (yellow) */}
+                        {highlights[String(pageNum)]?.map((rect, idx) => {
+                          // Validate highlight coordinates are in 0-1 range
+                          if (rect.left > 1 || rect.top > 1 || rect.width > 1 || rect.height > 1 ||
+                              rect.left < 0 || rect.top < 0 || rect.width < 0 || rect.height < 0) {
+                            console.warn(`PDFViewer: Invalid highlight coordinates on page ${pageNum}:`, rect)
+                            return null
+                          }
+
+                          // Transform highlight coordinates based on user rotation only
                           // Backend coordinates are in original (0° rotation) mediabox space
-                          const inherentRotation = pageInherentRotations.current[pageNum] || 0
+                          // PDF is rendered with inherent rotation ignored (line 180), so highlights
+                          // should only be transformed by user rotation to match the rendered page
                           const userRotation = pageRotations[pageNum] || 0
-                          const totalRotation = inherentRotation + userRotation
-                          const transformedRect = transformHighlight(rect, totalRotation)
+                          const transformedRect = transformHighlight(rect, userRotation)
 
                           // Get viewport dimensions for this page
                           const viewport = viewportDimensions[pageNum]
@@ -657,8 +805,42 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
 
                           return (
                             <div
-                              key={idx}
+                              key={`candidate-${idx}`}
                               className="highlight-rect"
+                              style={{
+                                left: `${pixelLeft}px`,
+                                top: `${pixelTop}px`,
+                                width: `${pixelWidth}px`,
+                                height: `${pixelHeight}px`,
+                              }}
+                            />
+                          )
+                        })}
+
+                        {/* Render search highlights (cyan) */}
+                        {searchResults[pageNum]?.map((rect, idx) => {
+                          // Apply same transformation as candidate highlights (only user rotation)
+                          const userRotation = pageRotations[pageNum] || 0
+                          const transformedRect = transformHighlight(rect, userRotation)
+
+                          const viewport = viewportDimensions[pageNum]
+                          if (!viewport) return null
+
+                          const canvas = canvasRefs.current[pageNum]
+                          if (!canvas) return null
+
+                          const scaleX = canvas.offsetWidth / canvas.width
+                          const scaleY = canvas.offsetHeight / canvas.height
+
+                          const pixelLeft = transformedRect.left * viewport.width * scaleX
+                          const pixelTop = transformedRect.top * viewport.height * scaleY
+                          const pixelWidth = transformedRect.width * viewport.width * scaleX
+                          const pixelHeight = transformedRect.height * viewport.height * scaleY
+
+                          return (
+                            <div
+                              key={`search-${idx}`}
+                              className="highlight-rect-search"
                               style={{
                                 left: `${pixelLeft}px`,
                                 top: `${pixelTop}px`,

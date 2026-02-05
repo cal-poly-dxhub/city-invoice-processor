@@ -349,6 +349,10 @@ def _associate_amounts_with_budget_items(
             table_id, row_idx = found_location
             budget_item_for_row = table_row_budgets[table_id].get(row_idx)
 
+            # If no canonical budget item matched, default to "Other"
+            if budget_item_for_row is None:
+                budget_item_for_row = "Other"
+
             amount_obj["budget_item"] = budget_item_for_row
             amount_obj["source"] = "table_row"
             amount_obj["table_row_index"] = row_idx
