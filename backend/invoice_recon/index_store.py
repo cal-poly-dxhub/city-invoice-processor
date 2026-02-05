@@ -7,6 +7,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from invoice_recon.models import DocumentRef, PageRecord
+from invoice_recon.table_parser import TableStructure
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,14 @@ class IndexStore:
                 PRIMARY KEY (doc_id, page_number)
             )
         """)
+
+        # Add tables_json column if it doesn't exist (for backward compatibility)
+        try:
+            cursor.execute("ALTER TABLE pages ADD COLUMN tables_json TEXT")
+            logger.info("Added tables_json column to pages table")
+        except sqlite3.OperationalError:
+            # Column already exists
+            pass
 
         conn.commit()
         conn.close()
@@ -115,7 +124,7 @@ class IndexStore:
 
         cursor.execute(
             """
-            SELECT doc_id, page_number, text_source, text, entities_json, words_json
+            SELECT doc_id, page_number, text_source, text, entities_json, words_json, tables_json
             FROM pages
             WHERE doc_id = ? AND page_number = ?
             """,
@@ -128,6 +137,8 @@ class IndexStore:
         if row:
             entities = json.loads(row[4])
             words = json.loads(row[5]) if row[5] else []
+            # Note: tables are not stored in PageRecord, only used during entity extraction
+            # They're cached here for performance but not included in the returned PageRecord
             return PageRecord(
                 doc_id=row[0],
                 page_number=row[1],
@@ -162,6 +173,7 @@ class IndexStore:
         text: str,
         entities: Dict[str, Any],
         words: List[Dict[str, Any]] = None,
+        tables: Optional[List[TableStructure]] = None,
     ) -> None:
         """Insert or update page data."""
         text_sha256 = hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -169,14 +181,20 @@ class IndexStore:
         entities_sha256 = hashlib.sha256(entities_json.encode("utf-8")).hexdigest()
         words_json = json.dumps(words, sort_keys=True) if words else None
 
+        # Serialize tables
+        if tables:
+            tables_json = json.dumps([t.dict() for t in tables], sort_keys=True)
+        else:
+            tables_json = None
+
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
         cursor.execute(
             """
             INSERT OR REPLACE INTO pages
-            (doc_id, page_number, text_source, text_sha256, text, entities_json, entities_sha256, words_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (doc_id, page_number, text_source, text_sha256, text, entities_json, entities_sha256, words_json, tables_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 doc_id,
@@ -187,6 +205,7 @@ class IndexStore:
                 entities_json,
                 entities_sha256,
                 words_json,
+                tables_json,
             ),
         )
 

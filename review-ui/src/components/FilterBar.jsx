@@ -10,7 +10,9 @@ function FilterBar({
   selectedAgency,
   setSelectedAgency,
   verificationMode,
-  setVerificationMode
+  setVerificationMode,
+  minConfidenceScore,
+  setMinConfidenceScore
 }) {
   return (
     <div className="filter-bar">
@@ -55,22 +57,36 @@ function FilterBar({
       </div>
 
       <div className="filter-section">
-        <label className="filter-label">Match Type</label>
+        <label className="filter-label">Filter By</label>
         <select
           value={selectedMatchType}
           onChange={(e) => setSelectedMatchType(e.target.value)}
           className="filter-select"
         >
           <option value="all">All Matches</option>
-          <option value="amount">Amount-Based</option>
-          <option value="cross-page">Cross-Page</option>
-          <option value="keyword">Keyword</option>
           <option value="low-confidence">Low Confidence</option>
-          <option value="too-many">Too Many Pages</option>
-          <option value="zero-amount">$0 - No Match Needed</option>
           <option value="no-pdf">No PDF Uploaded</option>
           <option value="none">No Match</option>
         </select>
+      </div>
+
+      <div className="filter-section">
+        <label className="filter-label">
+          Min Confidence: {Math.round(minConfidenceScore * 100)}%
+        </label>
+        <input
+          type="range"
+          min="0"
+          max="100"
+          value={Math.round(minConfidenceScore * 100)}
+          onChange={(e) => setMinConfidenceScore(parseInt(e.target.value) / 100)}
+          className="confidence-slider"
+        />
+        <div className="slider-labels">
+          <span>0%</span>
+          <span>50%</span>
+          <span>100%</span>
+        </div>
       </div>
     </div>
   )

@@ -11,13 +11,14 @@ function App() {
   const [error, setError] = useState(null);
 
   const [selectedBudgetItem, setSelectedBudgetItem] = useState("all");
-  const [selectedMatchType, setSelectedMatchType] = useState("all");
+  const [selectedMatchType, setSelectedMatchType] = useState("low-confidence");
   const [selectedAgency, setSelectedAgency] = useState("all");
   const [selectedItem, setSelectedItem] = useState(null);
   const [verificationMode, setVerificationMode] =
     useState("needs-verification"); // 'needs-verification' or 'all'
   const [completedItems, setCompletedItems] = useState(new Set()); // Track row_ids that are marked done
   const [showSummary, setShowSummary] = useState(false); // Track whether to show finish summary
+  const [minConfidenceScore, setMinConfidenceScore] = useState(0.5); // Min confidence threshold (0-1)
 
   useEffect(() => {
     loadReconciliation();
@@ -83,6 +84,38 @@ function App() {
     }
   };
 
+  // Filter candidates based on minConfidenceScore
+  const filterCandidates = (candidates) => {
+    if (!candidates) return [];
+    return candidates.filter(c => c.score >= minConfidenceScore);
+  };
+
+  // Apply confidence filtering to a line item
+  const applyConfidenceFilter = (item) => {
+    const filteredCandidates = filterCandidates(item.candidates);
+
+    // If PDF exists but all candidates filtered out, update selected_evidence
+    const hasMatchingDoc = item.candidates && item.candidates.length > 0 && item.candidates[0].doc_id;
+    const allFiltered = filteredCandidates.length === 0 && item.candidates && item.candidates.length > 0;
+
+    if (allFiltered && hasMatchingDoc) {
+      return {
+        ...item,
+        candidates: filteredCandidates,
+        selected_evidence: {
+          doc_id: item.candidates[0].doc_id,
+          page_numbers: [],
+          selection_source: "auto"
+        }
+      };
+    }
+
+    return {
+      ...item,
+      candidates: filteredCandidates
+    };
+  };
+
   const getMatchType = (item) => {
     // Check if amount is explicitly $0 - no matching needed
     if (item.raw?.amount === 0) return "zero-amount";
@@ -119,34 +152,36 @@ function App() {
   };
 
   const filteredItems =
-    data?.line_items?.filter((item) => {
-      // Filter by budget item
-      if (
-        selectedBudgetItem !== "all" &&
-        item.budget_item !== selectedBudgetItem
-      )
-        return false;
+    data?.line_items
+      ?.map(item => applyConfidenceFilter(item)) // Apply confidence filtering first
+      ?.filter((item) => {
+        // Filter by budget item
+        if (
+          selectedBudgetItem !== "all" &&
+          item.budget_item !== selectedBudgetItem
+        )
+          return false;
 
-      // Filter by match type
-      if (selectedMatchType !== "all") {
-        const matchType = getMatchType(item);
-        if (selectedMatchType !== matchType) return false;
-      }
+        // Filter by match type
+        if (selectedMatchType !== "all") {
+          const matchType = getMatchType(item);
+          if (selectedMatchType !== matchType) return false;
+        }
 
-      // Filter by agency
-      if (selectedAgency !== "all" && item.raw?.agency !== selectedAgency)
-        return false;
+        // Filter by agency
+        if (selectedAgency !== "all" && item.raw?.agency !== selectedAgency)
+          return false;
 
-      // Filter by verification status
-      if (
-        verificationMode === "needs-verification" &&
-        completedItems.has(item.row_id)
-      ) {
-        return false;
-      }
+        // Filter by verification status
+        if (
+          verificationMode === "needs-verification" &&
+          completedItems.has(item.row_id)
+        ) {
+          return false;
+        }
 
-      return true;
-    }) || [];
+        return true;
+      }) || [];
 
   if (loading) {
     return (
@@ -172,7 +207,9 @@ function App() {
   }
 
   const incompleteItems =
-    data?.line_items?.filter((item) => !completedItems.has(item.row_id)) || [];
+    data?.line_items
+      ?.map(item => applyConfidenceFilter(item))
+      ?.filter((item) => !completedItems.has(item.row_id)) || [];
 
   return (
     <div className="app">
@@ -287,6 +324,8 @@ function App() {
             setSelectedAgency={setSelectedAgency}
             verificationMode={verificationMode}
             setVerificationMode={setVerificationMode}
+            minConfidenceScore={minConfidenceScore}
+            setMinConfidenceScore={setMinConfidenceScore}
           />
 
           <div className="items-list">

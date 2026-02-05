@@ -30,8 +30,14 @@ class Config:
     TEXTRACT_MODE: str = os.getenv("TEXTRACT_MODE", "auto")  # auto, always, never
     TEXTRACT_MAX_LINES: int = int(os.getenv("TEXTRACT_MAX_LINES", "300"))
 
+    # Table Detection
+    TABLE_DETECTION_ENABLED: bool = os.getenv("TABLE_DETECTION_ENABLED", "false").lower() == "true"
+
     # Processing
     MAX_WORKERS: int = int(os.getenv("MAX_WORKERS", "3"))
+
+    # Matching
+    MIN_CANDIDATE_SCORE: float = float(os.getenv("MIN_CANDIDATE_SCORE", "0.1"))
 
     # Output
     OUTPUT_DIR: str = os.getenv("OUTPUT_DIR", "jobs")

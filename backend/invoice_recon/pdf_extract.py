@@ -3,10 +3,12 @@
 import hashlib
 import logging
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 import fitz  # PyMuPDF
 from invoice_recon.config import Config
 from invoice_recon.textract_text import extract_text_from_image_bytes, extract_text_and_words_from_image_bytes
+from invoice_recon.bedrock_vision import detect_table_page
+from invoice_recon.table_parser import TableStructure
 
 logger = logging.getLogger(__name__)
 
@@ -108,11 +110,13 @@ def render_page_to_png_bytes(page, dpi: int = 200) -> bytes:
 
 def extract_page_with_fallback(
     page, page_number: int
-) -> Tuple[str, str, List[Dict]]:
+) -> Tuple[str, str, List[Dict], Optional[List[TableStructure]]]:
     """
-    Extract text and word boxes from a page with Textract fallback.
+    Extract text, word boxes, and tables from a page with Textract fallback.
 
     Strategy:
+    0. If TABLE_DETECTION_ENABLED, use Bedrock vision to detect table pages
+       - If detected as table, skip PyMuPDF and use Textract directly
     1. Try PyMuPDF first for text + geometry (fast, free)
     2. If text is sufficient, use PyMuPDF geometry
     3. If text insufficient, fall back to Textract (slow, paid)
@@ -122,31 +126,47 @@ def extract_page_with_fallback(
         page_number: Page number (1-based)
 
     Returns:
-        Tuple of (extracted_text, text_source, word_boxes)
-        - text_source is "pymupdf" or "textract"
+        Tuple of (extracted_text, text_source, word_boxes, tables)
+        - text_source is "pymupdf" or "textract" or "textract_table"
         - word_boxes is a list of dicts with keys: text, left, top, width, height
           (normalized 0-1 coordinates)
+        - tables is a list of TableStructure objects (empty for PyMuPDF)
     """
+    # Step 0: Check if table detection is enabled and detect tables
+    if Config.TABLE_DETECTION_ENABLED and Config.TEXTRACT_MODE != "never":
+        logger.debug(f"Page {page_number}: Running table detection")
+        png_bytes = render_page_to_png_bytes(page)
+        if png_bytes:
+            is_table = detect_table_page(png_bytes)
+            if is_table:
+                logger.info(
+                    f"Page {page_number}: Detected as table page, using Textract directly"
+                )
+                textract_text, word_boxes, tables = extract_text_and_words_from_image_bytes(png_bytes)
+                return (textract_text, "textract_table", word_boxes, tables)
+        else:
+            logger.warning(f"Page {page_number}: Failed to render for table detection")
+
     # Try PyMuPDF first (extract both text and geometry)
     pymupdf_text, pymupdf_word_boxes = extract_page_text_and_words_pymupdf(page)
 
     # Check mode
     if Config.TEXTRACT_MODE == "never":
-        return (pymupdf_text, "pymupdf", pymupdf_word_boxes)
+        return (pymupdf_text, "pymupdf", pymupdf_word_boxes, [])
 
     if Config.TEXTRACT_MODE == "always":
         # Always use Textract
         logger.info(f"Page {page_number}: TEXTRACT_MODE=always, using Textract")
         png_bytes = render_page_to_png_bytes(page)
         if png_bytes:
-            textract_text, word_boxes = extract_text_and_words_from_image_bytes(png_bytes)
-            return (textract_text, "textract", word_boxes)
+            textract_text, word_boxes, tables = extract_text_and_words_from_image_bytes(png_bytes)
+            return (textract_text, "textract", word_boxes, tables)
         else:
             logger.warning(
                 f"Page {page_number}: Failed to render for Textract, "
                 "falling back to PyMuPDF"
             )
-            return (pymupdf_text, "pymupdf", pymupdf_word_boxes)
+            return (pymupdf_text, "pymupdf", pymupdf_word_boxes, [])
 
     # Mode is "auto" - use Textract only if PyMuPDF text OR geometry is insufficient
     text_sufficient = is_text_sufficient(pymupdf_text)
@@ -157,7 +177,7 @@ def extract_page_with_fallback(
             f"Page {page_number}: PyMuPDF text and geometry sufficient "
             f"({len(pymupdf_text)} chars, {len(pymupdf_word_boxes)} words)"
         )
-        return (pymupdf_text, "pymupdf", pymupdf_word_boxes)
+        return (pymupdf_text, "pymupdf", pymupdf_word_boxes, [])
 
     # PyMuPDF text or geometry insufficient, fall back to Textract
     if not text_sufficient:
@@ -172,29 +192,30 @@ def extract_page_with_fallback(
         )
     png_bytes = render_page_to_png_bytes(page)
     if png_bytes:
-        textract_text, word_boxes = extract_text_and_words_from_image_bytes(png_bytes)
-        return (textract_text, "textract", word_boxes)
+        textract_text, word_boxes, tables = extract_text_and_words_from_image_bytes(png_bytes)
+        return (textract_text, "textract", word_boxes, tables)
     else:
         logger.warning(
             f"Page {page_number}: Failed to render for Textract, "
             "using PyMuPDF text anyway"
         )
-        return (pymupdf_text, "pymupdf", pymupdf_word_boxes)
+        return (pymupdf_text, "pymupdf", pymupdf_word_boxes, [])
 
 
 def extract_pdf_pages(
     pdf_path: Path,
-) -> List[Tuple[int, str, str, List[Dict]]]:
+) -> List[Tuple[int, str, str, List[Dict], Optional[List[TableStructure]]]]:
     """
-    Extract text and word boxes from all pages of a PDF.
+    Extract text, word boxes, and tables from all pages of a PDF.
 
     Args:
         pdf_path: Path to PDF file
 
     Returns:
-        List of tuples: (page_number, text, text_source, word_boxes)
+        List of tuples: (page_number, text, text_source, word_boxes, tables)
         - page_number is 1-based
         - word_boxes is a list of dicts with keys: text, left, top, width, height
+        - tables is a list of TableStructure objects (empty for PyMuPDF pages)
     """
     if not pdf_path.exists():
         raise FileNotFoundError(f"PDF not found: {pdf_path}")
@@ -208,9 +229,9 @@ def extract_pdf_pages(
             page_number = page_index + 1  # 1-based
             page = doc[page_index]
 
-            text, text_source, word_boxes = extract_page_with_fallback(page, page_number)
+            text, text_source, word_boxes, tables = extract_page_with_fallback(page, page_number)
 
-            results.append((page_number, text, text_source, word_boxes))
+            results.append((page_number, text, text_source, word_boxes, tables))
 
         doc.close()
 

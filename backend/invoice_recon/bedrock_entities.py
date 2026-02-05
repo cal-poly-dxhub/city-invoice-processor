@@ -3,10 +3,12 @@
 import json
 import logging
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 import boto3
 from botocore.exceptions import ClientError
 from invoice_recon.config import Config
+from invoice_recon.table_parser import TableStructure, identify_budget_items_in_table
+from invoice_recon.budget_items import BUDGET_ITEMS
 
 logger = logging.getLogger(__name__)
 
@@ -155,14 +157,22 @@ def get_safe_default_entities(page_number: int) -> Dict[str, Any]:
     }
 
 
-def extract_entities(page_text: str, budget_item: str, page_number: int) -> Dict[str, Any]:
+def extract_entities(
+    page_text: str,
+    budget_item: str,
+    page_number: int,
+    page_tables: Optional[List[TableStructure]] = None,
+    page_doc_id: Optional[str] = None
+) -> Dict[str, Any]:
     """
-    Extract entities from page text using Bedrock.
+    Extract entities from page text using Bedrock and associate amounts with budget items.
 
     Args:
         page_text: Extracted text from page
         budget_item: Budget item category
         page_number: Page number (1-based)
+        page_tables: Optional list of table structures from Textract
+        page_doc_id: Optional document ID for default budget item inheritance
 
     Returns:
         Entities dict with schema:
@@ -173,7 +183,8 @@ def extract_entities(page_text: str, budget_item: str, page_number: int) -> Dict
             "organizations": [str],
             "periods": [str],
             "dates": [str],
-            "amounts": [{"raw": str, "value": float|None, "currency": str, "context": str}],
+            "amounts": [{"raw": str, "value": float|None, "currency": str, "context": str,
+                        "budget_item": str, "source": str, "table_row_index": int}],
             "keywords": [str]
         }
     """
@@ -226,6 +237,9 @@ ONLY extract what is present in the text. Return valid JSON only."""
         # Ensure page_number is set
         entities["page_number"] = page_number
 
+        # Associate amounts with budget items
+        _associate_amounts_with_budget_items(entities, page_tables, page_doc_id)
+
         return entities
 
     except (json.JSONDecodeError, ValueError) as e:
@@ -265,6 +279,10 @@ Return this exact schema as valid JSON:
 
             entities = extract_json_from_response(repair_response)
             entities["page_number"] = page_number
+
+            # Associate amounts with budget items
+            _associate_amounts_with_budget_items(entities, page_tables, page_doc_id)
+
             return entities
 
         except Exception as repair_error:
@@ -274,3 +292,81 @@ Return this exact schema as valid JSON:
     except Exception as e:
         logger.error(f"Unexpected error in extract_entities: {e}")
         return get_safe_default_entities(page_number)
+
+
+def _associate_amounts_with_budget_items(
+    entities: Dict[str, Any],
+    page_tables: Optional[List[TableStructure]],
+    page_doc_id: Optional[str]
+) -> None:
+    """
+    Associate amounts with budget items based on table location.
+
+    Modifies entities["amounts"] in-place to add:
+    - budget_item: Budget item name
+    - source: "table_row" or "page_default"
+    - table_row_index: Optional row index if in table
+
+    Args:
+        entities: Entities dict (modified in-place)
+        page_tables: List of table structures from Textract
+        page_doc_id: Document ID for default budget item
+    """
+    amounts = entities.get("amounts", [])
+    if not amounts:
+        return
+
+    # If no tables, all amounts inherit page default
+    if not page_tables or len(page_tables) == 0:
+        for amount_obj in amounts:
+            amount_obj["budget_item"] = page_doc_id
+            amount_obj["source"] = "page_default"
+        logger.debug(f"No tables found, all {len(amounts)} amounts inherit page default: {page_doc_id}")
+        return
+
+    # Build row -> budget_item mapping for all tables
+    table_row_budgets = {}  # {table_id: {row_index: budget_item}}
+    for table in page_tables:
+        row_budget_map = identify_budget_items_in_table(table, BUDGET_ITEMS)
+        table_row_budgets[table.table_id] = row_budget_map
+
+    # For each amount, find its table location
+    for amount_obj in amounts:
+        amount_text = amount_obj.get("raw", "")
+
+        # Search for amount in table cells
+        found_location = None
+        for table in page_tables:
+            for cell in table.cells:
+                if amount_text in cell.text:
+                    found_location = (table.table_id, cell.row_index)
+                    break
+            if found_location:
+                break
+
+        # Associate with budget item
+        if found_location:
+            table_id, row_idx = found_location
+            budget_item_for_row = table_row_budgets[table_id].get(row_idx)
+
+            amount_obj["budget_item"] = budget_item_for_row
+            amount_obj["source"] = "table_row"
+            amount_obj["table_row_index"] = row_idx
+
+            logger.debug(
+                f"Amount {amount_text} found in table {table_id} row {row_idx} "
+                f"-> budget_item: {budget_item_for_row}"
+            )
+        else:
+            # Not in table, use page default
+            amount_obj["budget_item"] = page_doc_id
+            amount_obj["source"] = "page_default"
+
+            logger.debug(f"Amount {amount_text} not in table -> page default: {page_doc_id}")
+
+    # Log summary
+    table_amounts = sum(1 for a in amounts if a.get("source") == "table_row")
+    default_amounts = sum(1 for a in amounts if a.get("source") == "page_default")
+    logger.info(
+        f"Amount association: {table_amounts} from tables, {default_amounts} from page default"
+    )

@@ -572,7 +572,7 @@ def score_page_by_amount(
     if not page_amounts:
         return (0.0, ["No amounts extracted from page"], None)
 
-    # Build list of numeric amounts with their context
+    # Build list of numeric amounts with their context AND budget_item
     amounts_with_context = []
     for amt_obj in page_amounts:
         amt_value = amt_obj.get("value")
@@ -582,6 +582,7 @@ def score_page_by_amount(
                     "value": float(amt_value),
                     "raw": amt_obj.get("raw", ""),
                     "context": amt_obj.get("context", "")[:50],
+                    "budget_item": amt_obj.get("budget_item"),  # NEW: include budget_item
                 })
             except (ValueError, TypeError):
                 continue
@@ -600,12 +601,38 @@ def score_page_by_amount(
     # Strategy 2: Component match (2-4 amounts sum to target)
     # Only try if we have multiple amounts and target is reasonable
     if len(amounts_with_context) >= 2 and target_amount < 10000:
-        # Try combinations of 2-4 amounts
+        # NEW: Filter amounts by budget item BEFORE trying combinations
+        line_item_budget = line_item.budget_item  # e.g., "Salary"
+
+        filtered_amounts = []
+        excluded_count = 0
+        for amt in amounts_with_context:
+            amt_budget = amt.get("budget_item")
+
+            # Include if:
+            # 1. Amount budget matches line item budget, OR
+            # 2. Amount has no budget_item field (backward compat)
+            if amt_budget is None or amt_budget == line_item_budget:
+                filtered_amounts.append(amt)
+            else:
+                excluded_count += 1
+
+        # Log filtering if any amounts were excluded
+        if excluded_count > 0:
+            logger.debug(
+                f"Filtered amounts for {line_item_budget}: "
+                f"kept {len(filtered_amounts)}, excluded {excluded_count}"
+            )
+            rationale.append(
+                f"Filtered to {line_item_budget} amounts (excluded {excluded_count} from other budget items)"
+            )
+
+        # Try combinations of filtered amounts
         for combo_size in [2, 3, 4]:
-            if combo_size > len(amounts_with_context):
+            if combo_size > len(filtered_amounts):
                 continue
 
-            for combo in combinations(amounts_with_context, combo_size):
+            for combo in combinations(filtered_amounts, combo_size):
                 combo_sum = sum(amt["value"] for amt in combo)
                 if abs(combo_sum - target_amount) < tolerance:
                     score = 0.85

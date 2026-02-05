@@ -91,7 +91,7 @@ def index_document(
 
     # Process each page
     pages = []
-    for page_number, text, text_source, word_boxes in extracted_pages:
+    for page_number, text, text_source, word_boxes, tables in extracted_pages:
         # Compute text hash
         text_sha256 = hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -103,12 +103,18 @@ def index_document(
                 pages.append(page_record)
                 continue
 
-        # Extract entities
+        # Extract entities with table context
         logger.info(f"Extracting entities from {doc_id} page {page_number} ({text_source})")
-        entities = extract_entities(text, budget_item, page_number)
+        entities = extract_entities(
+            text,
+            budget_item,
+            page_number,
+            page_tables=tables,
+            page_doc_id=doc_id
+        )
 
         # Store in index
-        index_store.upsert_page(doc_id, page_number, text_source, text, entities, word_boxes)
+        index_store.upsert_page(doc_id, page_number, text_source, text, entities, word_boxes, tables)
 
         # Create PageRecord
         page_record = PageRecord(
@@ -123,7 +129,7 @@ def index_document(
 
     logger.info(
         f"Completed indexing {doc_id}: {len(pages)} pages "
-        f"({sum(1 for _, _, src, _ in extracted_pages if src == 'textract')} via Textract)"
+        f"({sum(1 for _, _, src, _, _ in extracted_pages if src == 'textract')} via Textract)"
     )
 
     return (doc_ref, pages)
@@ -226,10 +232,32 @@ def run(
 
         # Generate candidates
         candidates = generate_candidates_for_line_item(line_item, pages)
-        candidates_map[line_item.row_id] = candidates
+
+        # Filter out low-confidence candidates (score < MIN_CANDIDATE_SCORE)
+        # This prevents showing unhelpful pages and results in more "No Match" items
+        filtered_candidates = [
+            c for c in candidates
+            if c.score >= Config.MIN_CANDIDATE_SCORE
+        ]
+
+        if filtered_candidates != candidates:
+            logger.debug(
+                f"Row {line_item.row_index}: Filtered out {len(candidates) - len(filtered_candidates)} "
+                f"low-confidence candidates (score < {Config.MIN_CANDIDATE_SCORE})"
+            )
+
+        candidates_map[line_item.row_id] = filtered_candidates
 
         # Select default evidence
-        selected = select_default_evidence(candidates)
+        # If PDF exists but all candidates filtered out, preserve doc_id to distinguish from "no PDF"
+        selected = select_default_evidence(filtered_candidates)
+        if not filtered_candidates and pages:
+            # PDF exists but no good candidates - set doc_id to show "No Match" not "No PDF"
+            selected = SelectedEvidence(
+                doc_id=budget_item_slug,
+                page_numbers=[],
+                selection_source="auto",
+            )
         selected_evidence_map[line_item.row_id] = selected
 
     logger.info(f"Generated candidates for {len(line_items)} line items")
