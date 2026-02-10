@@ -6,8 +6,24 @@ import './PDFViewer.css'
 // Set up PDF.js worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`
 
+// Fallback filename map for backward compat with old reconciliation.json without source_files
+const LEGACY_FILENAME_MAP = {
+  'Salary': 'Salary.pdf',
+  'Fringe': 'Fringe.pdf',
+  'Contractual Service': 'Contractual_Service.pdf',
+  'Equipment': 'Equipment.pdf',
+  'Insurance': 'Insurance.pdf',
+  'Travel and Conferences': 'Travel_and_Conferences.pdf',
+  'Space Rental/Occupancy Costs': 'Space_Rental_Occupancy_Costs.pdf',
+  'Telecommunications': 'Telecommunications.pdf',
+  'Utilities': 'Utilities.pdf',
+  'Supplies': 'Supplies.pdf',
+  'Other': 'Other.pdf',
+  'Indirect Costs': 'Indirect_Costs.pdf',
+}
+
 function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted }) {
-  const [pdfDoc, setPdfDoc] = useState(null)
+  const [pdfsReady, setPdfsReady] = useState(false) // True when all source PDFs are loaded
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [highlights, setHighlights] = useState({})
@@ -28,6 +44,46 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
   const canvasRefs = useRef({})
   const containerRefs = useRef({})
   const drawingStartRef = useRef(null) // { startX, startY } during active drag
+  const pdfDocsRef = useRef({}) // Cache of loaded PDF.js documents: { source_doc_id: pdfDoc }
+
+  // Get source files for the current document (with backward compat fallback)
+  const getSourceFiles = () => {
+    if (doc?.source_files?.length > 0) return doc.source_files
+    // Backward compat: synthesize a single source file from budget_item
+    const filename = LEGACY_FILENAME_MAP[doc?.budget_item]
+    if (!filename) return []
+    return [{
+      doc_id: doc.doc_id,
+      pdf_path: filename,
+      filename: filename,
+      page_count: doc.page_count || 0,
+      page_offset: 0,
+    }]
+  }
+
+  // Resolve a virtual page number to a physical PDF + local page number
+  const resolveVirtualPage = (virtualPageNum) => {
+    const sourceFiles = getSourceFiles()
+    for (const sf of sourceFiles) {
+      if (virtualPageNum > sf.page_offset && virtualPageNum <= sf.page_offset + sf.page_count) {
+        return {
+          sourceFile: sf,
+          localPage: virtualPageNum - sf.page_offset,
+        }
+      }
+    }
+    return null
+  }
+
+  // Get the source filename for a virtual page (for display)
+  const getSourceFilenameForPage = (virtualPageNum) => {
+    const resolved = resolveVirtualPage(virtualPageNum)
+    if (!resolved) return null
+    const sourceFiles = getSourceFiles()
+    // Only show filename if there are multiple source files
+    if (sourceFiles.length <= 1) return null
+    return resolved.sourceFile.filename
+  }
 
   // Helper to get current candidate (merged with user edits)
   const getCurrentCandidate = () => {
@@ -67,22 +123,22 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
       setDrawingMode(false)
       setDrawingRect(null)
     }
-    loadPDF()
+    loadPDFs()
   }, [item.row_id])
 
   useEffect(() => {
     if (!doc) return
-    loadPDF()
+    loadPDFs()
   }, [doc])
 
   useEffect(() => {
-    if (pdfDoc) {
+    if (pdfsReady) {
       // Use requestAnimationFrame to ensure canvas is fully laid out before rendering
       requestAnimationFrame(() => {
         renderPages()
       })
     }
-  }, [pdfDoc, pageNumbers, pageRotations, currentPageIdx, viewMode, allPagesCurrentPage, searchPageIdx, searchResults])
+  }, [pdfsReady, pageNumbers, pageRotations, currentPageIdx, viewMode, allPagesCurrentPage, searchPageIdx, searchResults])
 
   // Reset to first page when candidate changes
   // Note: highlights will be updated by renderPages() after the page renders and inherent rotation is captured
@@ -90,38 +146,27 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
     setCurrentPageIdx(0)
   }, [selectedCandidateIdx])
 
-  const loadPDF = async () => {
+  const loadPDFs = async () => {
     try {
       setLoading(true)
       setError(null)
+      setPdfsReady(false)
 
-      // Construct PDF path - budget items use specific naming conventions
-      // Map budget items to their actual PDF filenames
-      const filenameMap = {
-        'Salary': 'Salary.pdf',
-        'Fringe': 'Fringe.pdf',
-        'Contractual Service': 'Contractual_Service.pdf',
-        'Equipment': 'Equipment.pdf',
-        'Insurance': 'Insurance.pdf',
-        'Travel and Conferences': 'Travel_and_Conferences.pdf',
-        'Space Rental/Occupancy Costs': 'Space_Rental_Occupancy_Costs.pdf',
-        'Telecommunications': 'Telecommunications.pdf',
-        'Utilities': 'Utilities.pdf',
-        'Supplies': 'Supplies.pdf',
-        'Other': 'Other.pdf',
-        'Indirect Costs': 'Indirect_Costs.pdf',
+      const sourceFiles = getSourceFiles()
+      if (sourceFiles.length === 0) {
+        throw new Error(`No PDF source files found for: ${doc?.budget_item}`)
       }
 
-      const filename = filenameMap[doc.budget_item]
-      if (!filename) {
-        throw new Error(`No PDF found for budget item: ${doc.budget_item}`)
-      }
+      // Load all source PDFs in parallel (skip already-cached ones)
+      const loadPromises = sourceFiles.map(async (sf) => {
+        if (pdfDocsRef.current[sf.doc_id]) return // Already loaded
+        const pdfPath = `/test-files/pdf/${sf.pdf_path}`
+        const pdf = await pdfjsLib.getDocument(pdfPath).promise
+        pdfDocsRef.current[sf.doc_id] = pdf
+      })
 
-      const pdfPath = `/test-files/pdf/${filename}`
-
-      const loadingTask = pdfjsLib.getDocument(pdfPath)
-      const pdf = await loadingTask.promise
-      setPdfDoc(pdf)
+      await Promise.all(loadPromises)
+      setPdfsReady(true)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -130,7 +175,7 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
   }
 
   const renderPages = async () => {
-    if (!pdfDoc) return
+    if (!pdfsReady) return
 
     // Determine which page to render based on view mode
     let pageNum
@@ -174,7 +219,19 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
     }
 
     try {
-      const page = await pdfDoc.getPage(pageNum)
+      // Resolve virtual page to physical PDF + local page number
+      const resolved = resolveVirtualPage(pageNum)
+      if (!resolved) {
+        console.error(`PDFViewer: Could not resolve virtual page ${pageNum}`)
+        return
+      }
+      const { sourceFile, localPage } = resolved
+      const pdfDoc = pdfDocsRef.current[sourceFile.doc_id]
+      if (!pdfDoc) {
+        console.error(`PDFViewer: PDF not loaded for source ${sourceFile.doc_id}`)
+        return
+      }
+      const page = await pdfDoc.getPage(localPage)
 
       // Store the page's inherent rotation in ref
       const inherentRotation = page.rotate || 0
@@ -849,7 +906,12 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
                     </div>
 
                     <div className="page-header-row page-actions-row">
-                      <span className="doc-name">{doc?.budget_item}</span>
+                      <span className="doc-name">
+                        {doc?.budget_item}
+                        {getSourceFilenameForPage(pageNum) && (
+                          <span className="source-filename"> — {getSourceFilenameForPage(pageNum)}</span>
+                        )}
+                      </span>
 
                       <div className="view-mode-toggle">
                         <button

@@ -466,6 +466,11 @@
   color: var(--color-text-secondary);
 }
 
+.source-filename {
+  font-weight: 400;
+  opacity: 0.8;
+}
+
 .rotation-controls {
   display: flex;
   gap: 0.5rem;

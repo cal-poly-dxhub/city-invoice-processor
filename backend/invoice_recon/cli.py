@@ -2,9 +2,10 @@
 
 import hashlib
 import logging
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 import typer
 from invoice_recon.bedrock_entities import extract_entities
 from invoice_recon.budget_items import discover_pdfs_in_dir, get_budget_item_slug
@@ -21,6 +22,7 @@ from invoice_recon.models import (
     LineItem,
     PageRecord,
     SelectedEvidence,
+    SourceFile,
 )
 from invoice_recon.navigation_groups import build_navigation_groups
 from invoice_recon.output_contract import (
@@ -45,14 +47,14 @@ app = typer.Typer()
 
 
 def index_document(
-    pdf_info: Dict[str, str],
+    pdf_info: Dict[str, Any],
     index_store: IndexStore,
 ) -> Tuple[DocumentRef, List[PageRecord]]:
     """
-    Index a single PDF document (text extraction + entity extraction).
+    Index a single physical PDF document (text extraction + entity extraction).
 
     Args:
-        pdf_info: Dict with "path" and "budget_item"
+        pdf_info: Dict with "path", "budget_item", "doc_id", "pdf_path"
         index_store: IndexStore instance
 
     Returns:
@@ -60,9 +62,9 @@ def index_document(
     """
     pdf_path = Path(pdf_info["path"])
     budget_item = pdf_info["budget_item"]
-    doc_id = get_budget_item_slug(budget_item)
+    doc_id = pdf_info["doc_id"]
 
-    logger.info(f"Indexing document: {pdf_path.name} ({budget_item})")
+    logger.info(f"Indexing document: {pdf_path.name} ({budget_item}, doc_id={doc_id})")
 
     # Compute file hash
     file_sha256 = compute_file_sha256(pdf_path)
@@ -71,6 +73,9 @@ def index_document(
     if not index_store.should_reextract_document(doc_id, file_sha256):
         logger.info(f"Document {doc_id} unchanged, using cache")
         doc_ref = index_store.get_document(doc_id)
+        # Patch with runtime fields not stored in SQLite
+        doc_ref.pdf_path = pdf_info.get("pdf_path", pdf_path.name)
+        doc_ref.filename = pdf_path.name
         pages = index_store.get_all_pages_for_document(doc_id)
         return (doc_ref, pages)
 
@@ -86,6 +91,8 @@ def index_document(
         path=str(pdf_path),
         file_sha256=file_sha256,
         page_count=page_count,
+        pdf_path=pdf_info.get("pdf_path", pdf_path.name),
+        filename=pdf_path.name,
     )
     index_store.upsert_document(doc_ref)
 
@@ -174,17 +181,16 @@ def run(
         typer.echo("No PDFs found. Exiting.")
         raise typer.Exit(1)
 
-    # Step 3: Index PDFs
+    # Step 3: Index PDFs (each physical file independently)
     logger.info("Step 3: Indexing PDFs")
     artifacts_dir = Config.get_artifacts_dir(job_id)
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     index_db_path = artifacts_dir / "index.sqlite"
     index_store = IndexStore(index_db_path)
 
-    documents: List[DocumentRef] = []
-    pages_by_doc: Dict[str, List[PageRecord]] = {}
+    # Index each physical PDF file
+    physical_docs: List[Tuple[DocumentRef, List[PageRecord]]] = []
 
-    # Use ThreadPoolExecutor for parallel processing
     with ThreadPoolExecutor(max_workers=Config.MAX_WORKERS) as executor:
         future_to_pdf = {
             executor.submit(index_document, pdf_info, index_store): pdf_info
@@ -195,12 +201,71 @@ def run(
             pdf_info = future_to_pdf[future]
             try:
                 doc_ref, pages = future.result()
-                documents.append(doc_ref)
-                pages_by_doc[doc_ref.doc_id] = pages
+                physical_docs.append((doc_ref, pages))
             except Exception as e:
                 logger.error(f"Failed to index {pdf_info['path']}: {e}", exc_info=True)
 
-    logger.info(f"Indexed {len(documents)} documents")
+    logger.info(f"Indexed {len(physical_docs)} physical PDF files")
+
+    # Step 3b: Assemble virtual combined documents per budget item
+    # Multiple physical PDFs for the same budget item are concatenated with
+    # sequential virtual page numbering so matching can operate across files.
+    physical_by_budget: Dict[str, List[Tuple[DocumentRef, List[PageRecord]]]] = defaultdict(list)
+    for doc_ref, pages in physical_docs:
+        physical_by_budget[doc_ref.budget_item].append((doc_ref, pages))
+
+    documents: List[DocumentRef] = []
+    pages_by_doc: Dict[str, List[PageRecord]] = {}
+
+    for budget_item, phys_docs in physical_by_budget.items():
+        # Sort by pdf_path for stable ordering across runs
+        phys_docs.sort(key=lambda dp: dp[0].pdf_path or dp[0].path)
+
+        source_files = []
+        combined_pages = []
+        offset = 0
+        budget_slug = get_budget_item_slug(budget_item)
+
+        for doc_ref, pages in phys_docs:
+            source_files.append(SourceFile(
+                doc_id=doc_ref.doc_id,
+                pdf_path=doc_ref.pdf_path,
+                filename=doc_ref.filename,
+                page_count=doc_ref.page_count,
+                page_offset=offset,
+            ))
+            for page in pages:
+                virtual_page = PageRecord(
+                    doc_id=budget_slug,
+                    page_number=page.page_number + offset,
+                    text_source=page.text_source,
+                    text=page.text,
+                    entities=page.entities,
+                    words=page.words,
+                )
+                combined_pages.append(virtual_page)
+            offset += doc_ref.page_count
+
+        combined_doc = DocumentRef(
+            doc_id=budget_slug,
+            budget_item=budget_item,
+            path=phys_docs[0][0].path,
+            file_sha256=phys_docs[0][0].file_sha256,
+            page_count=offset,
+            source_files=source_files,
+            pdf_path=phys_docs[0][0].pdf_path,
+            filename=phys_docs[0][0].filename,
+        )
+        documents.append(combined_doc)
+        pages_by_doc[budget_slug] = combined_pages
+
+        if len(phys_docs) > 1:
+            logger.info(
+                f"Combined {len(phys_docs)} files for {budget_item}: "
+                f"{offset} total virtual pages"
+            )
+
+    logger.info(f"Assembled {len(documents)} virtual documents")
 
     # Step 4: Build navigation groups
     logger.info("Step 4: Building navigation groups")
@@ -283,6 +348,7 @@ def run(
         candidates_map=candidates_map,
         selected_evidence_map=selected_evidence_map,
         pdf_mappings=pdf_mappings,
+        pages_by_doc=pages_by_doc,
     )
 
     logger.info(f"Reconciliation complete! Output: {output_path}")

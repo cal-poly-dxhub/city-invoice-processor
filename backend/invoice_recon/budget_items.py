@@ -1,8 +1,11 @@
 """Budget item management and filename mapping."""
 
+import logging
 import re
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 # Fixed list of canonical budget items
 BUDGET_ITEMS = [
@@ -127,24 +130,72 @@ def match_filename_to_budget_item(filename: str) -> Optional[str]:
     return slug_map.get(slug)
 
 
-def discover_pdfs_in_dir(pdf_dir: Path) -> List[Dict[str, str]]:
+def discover_pdfs_in_dir(pdf_dir: Path) -> List[Dict[str, Any]]:
     """
     Discover PDFs in a directory and map them to budget items.
 
+    Supports two layouts:
+    - Flat files: pdf_dir/Salary.pdf (one PDF per budget item)
+    - Subdirectories: pdf_dir/salary/payroll_jan.pdf, payroll_feb.pdf (multiple per budget item)
+
+    If a budget item has both a subdirectory and a flat file, the subdirectory takes precedence.
+
     Returns:
-        List of dicts with keys: "path", "budget_item"
+        List of dicts with keys: "path", "budget_item", "doc_id", "pdf_path"
+        - doc_id: unique identifier per physical file
+        - pdf_path: relative path from pdf_dir
     """
     if not pdf_dir.exists():
         raise FileNotFoundError(f"PDF directory not found: {pdf_dir}")
 
     results = []
-    for pdf_path in sorted(pdf_dir.glob("*.pdf")):
-        budget_item = match_filename_to_budget_item(pdf_path.name)
-        if budget_item:
+    budget_items_with_subdirs = set()
+
+    # Phase 1: Scan subdirectories for multi-file budget items
+    for subdir in sorted(pdf_dir.iterdir()):
+        if not subdir.is_dir():
+            continue
+        # Try to match directory name to a budget item
+        budget_item = match_filename_to_budget_item(subdir.name)
+        if not budget_item:
+            continue
+
+        pdf_files = sorted(subdir.glob("*.pdf"))
+        if not pdf_files:
+            continue
+
+        budget_items_with_subdirs.add(budget_item)
+        budget_slug = get_budget_item_slug(budget_item)
+
+        for pdf_path in pdf_files:
+            file_slug = slugify(pdf_path.stem)
+            doc_id = f"{budget_slug}__{file_slug}"
             results.append({
                 "path": str(pdf_path),
                 "budget_item": budget_item,
+                "doc_id": doc_id,
+                "pdf_path": str(pdf_path.relative_to(pdf_dir)),
             })
+
+    # Phase 2: Scan flat files (skip if subdirectory exists for same budget item)
+    for pdf_path in sorted(pdf_dir.glob("*.pdf")):
+        budget_item = match_filename_to_budget_item(pdf_path.name)
+        if not budget_item:
+            continue
+        if budget_item in budget_items_with_subdirs:
+            logger.warning(
+                f"Skipping flat file {pdf_path.name}: "
+                f"subdirectory exists for {budget_item}"
+            )
+            continue
+
+        doc_id = get_budget_item_slug(budget_item)
+        results.append({
+            "path": str(pdf_path),
+            "budget_item": budget_item,
+            "doc_id": doc_id,
+            "pdf_path": str(pdf_path.relative_to(pdf_dir)),
+        })
 
     return results
 

@@ -29,8 +29,18 @@ class PageWordData(BaseModel):
     text: str = ""  # Full page text for fallback search
 
 
+class SourceFile(BaseModel):
+    """A physical PDF file that is part of a virtual combined document."""
+
+    doc_id: str  # Physical doc_id (e.g., "salary__payroll_jan")
+    pdf_path: str  # Relative path from pdf_dir (e.g., "salary/payroll_jan.pdf")
+    filename: str  # Display name (e.g., "payroll_jan.pdf")
+    page_count: int  # Pages in this physical file
+    page_offset: int  # Starting virtual page minus 1 (e.g., 0, 5, 8...)
+
+
 class DocumentRef(BaseModel):
-    """Reference to a PDF document."""
+    """Reference to a PDF document (possibly a virtual combined document)."""
 
     doc_id: str
     budget_item: str
@@ -38,6 +48,9 @@ class DocumentRef(BaseModel):
     file_sha256: str
     page_count: int
     pages_data: Dict[int, PageWordData] = Field(default_factory=dict)  # Page number -> word data for search
+    source_files: List["SourceFile"] = Field(default_factory=list)  # Physical PDF files composing this document
+    pdf_path: str = ""  # Relative path from pdf_dir (for single-file compat)
+    filename: str = ""  # Original filename
 
 
 class PageRecord(BaseModel):

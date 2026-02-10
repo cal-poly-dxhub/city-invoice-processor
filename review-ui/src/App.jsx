@@ -308,7 +308,7 @@ function App() {
       <div className="app-body">
         <aside className="sidebar">
           <FilterBar
-            budgetItems={data?.documents?.map((d) => d.budget_item) || []}
+            budgetItems={[...new Set(data?.documents?.map((d) => d.budget_item) || [])]}
             selectedBudgetItem={selectedBudgetItem}
             setSelectedBudgetItem={setSelectedBudgetItem}
             selectedMatchType={selectedMatchType}

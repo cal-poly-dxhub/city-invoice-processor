@@ -14,12 +14,12 @@ from invoice_recon.models import (
     LineItem,
     LineItemOutput,
     NavigationGroup,
+    PageRecord,
     PageWordData,
     ReconciliationOutput,
     SelectedEvidence,
     UserEdits,
 )
-from invoice_recon.index_store import IndexStore
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +50,7 @@ def write_reconciliation_output(
     candidates_map: Dict[str, List[CandidateEvidenceSet]],
     selected_evidence_map: Dict[str, SelectedEvidence],
     pdf_mappings: List[Dict[str, str]],
+    pages_by_doc: Optional[Dict[str, List[PageRecord]]] = None,
 ) -> Path:
     """
     Write reconciliation output to JSON.
@@ -58,12 +59,13 @@ def write_reconciliation_output(
         job_id: Job ID
         csv_path: Path to CSV file
         pdf_dir: Path to PDF directory
-        documents: List of DocumentRef
+        documents: List of DocumentRef (virtual combined documents)
         navigation_groups: List of NavigationGroup
         line_items: List of LineItem
         candidates_map: Map of row_id -> candidates
         selected_evidence_map: Map of row_id -> selected evidence
         pdf_mappings: List of PDF mappings from discovery
+        pages_by_doc: Map of doc_id -> virtual PageRecords (with renumbered pages)
 
     Returns:
         Path to written reconciliation.json
@@ -90,15 +92,27 @@ def write_reconciliation_output(
     )
 
     # Populate pages_data for each document (for search highlighting)
-    index_store = IndexStore(artifacts_dir / "index.sqlite")
+    # Use pre-built virtual pages if available (supports multi-file virtual documents)
     for doc_ref in documents:
-        pages = index_store.get_all_pages_for_document(doc_ref.doc_id)
-        for page in pages:
-            doc_ref.pages_data[page.page_number] = PageWordData(
-                words=page.words,
-                text=page.text,
-            )
-        logger.info(f"Exported {len(pages)} pages of word data for {doc_ref.doc_id}")
+        if pages_by_doc and doc_ref.doc_id in pages_by_doc:
+            virtual_pages = pages_by_doc[doc_ref.doc_id]
+            for page in virtual_pages:
+                doc_ref.pages_data[page.page_number] = PageWordData(
+                    words=page.words,
+                    text=page.text,
+                )
+            logger.info(f"Exported {len(virtual_pages)} virtual pages of word data for {doc_ref.doc_id}")
+        else:
+            # Fallback: load from SQLite (for single-file compat)
+            from invoice_recon.index_store import IndexStore
+            index_store = IndexStore(artifacts_dir / "index.sqlite")
+            pages = index_store.get_all_pages_for_document(doc_ref.doc_id)
+            for page in pages:
+                doc_ref.pages_data[page.page_number] = PageWordData(
+                    words=page.words,
+                    text=page.text,
+                )
+            logger.info(f"Exported {len(pages)} pages of word data for {doc_ref.doc_id}")
 
     # Build line item outputs
     line_item_outputs = []

@@ -83,9 +83,6 @@ def detect_table_page(image_bytes: bytes) -> bool:
 
     client = create_bedrock_client()
 
-    # Encode image to base64
-    image_base64 = base64.b64encode(image_bytes).decode("utf-8")
-
     # Construct vision prompt
     system_prompt = """You are analyzing document pages to detect if they contain primarily tabular data.
 A page should be classified as a "table page" if:
@@ -105,40 +102,33 @@ Respond with a JSON object containing:
   "reasoning": "brief explanation"
 }"""
 
-    user_message = {
-        "role": "user",
-        "content": [
-            {
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": "image/png",
-                    "data": image_base64
-                }
-            },
-            {
-                "type": "text",
-                "text": "Analyze this page and determine if it primarily contains tabular data."
-            }
-        ]
-    }
-
-    request_body = {
-        "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": 500,
-        "temperature": 0.0,
-        "system": system_prompt,
-        "messages": [user_message]
-    }
-
     try:
-        response = client.invoke_model(
+        # Use the Converse API which is model-agnostic (works with both
+        # Anthropic Claude and Amazon Nova models)
+        response = client.converse(
             modelId=Config.BEDROCK_VISION_MODEL_ID,
-            body=json.dumps(request_body)
+            system=[{"text": system_prompt}],
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "image": {
+                            "format": "png",
+                            "source": {"bytes": image_bytes},
+                        }
+                    },
+                    {
+                        "text": "Analyze this page and determine if it primarily contains tabular data."
+                    },
+                ],
+            }],
+            inferenceConfig={
+                "maxTokens": 500,
+                "temperature": 0.0,
+            },
         )
 
-        response_body = json.loads(response["body"].read())
-        content = response_body.get("content", [])
+        content = response.get("output", {}).get("message", {}).get("content", [])
 
         if not content:
             logger.warning("Empty response from Bedrock vision")
