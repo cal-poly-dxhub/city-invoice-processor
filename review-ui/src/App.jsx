@@ -12,7 +12,6 @@ function App() {
 
   const [selectedBudgetItem, setSelectedBudgetItem] = useState("all");
   const [selectedMatchType, setSelectedMatchType] = useState("low-confidence");
-  const [selectedAgency, setSelectedAgency] = useState("all");
   const [selectedItem, setSelectedItem] = useState(null);
   const [verificationMode, setVerificationMode] =
     useState("needs-verification"); // 'needs-verification' or 'all'
@@ -117,8 +116,8 @@ function App() {
   };
 
   const getMatchType = (item) => {
-    // Check if amount is explicitly $0 - no matching needed
-    if (item.raw?.amount === 0) return "zero-amount";
+    // Check if amount is blank/null or explicitly $0 - no matching needed
+    if (item.raw?.amount == null || item.raw?.amount === 0) return "zero-amount";
 
     // Check if no PDF was uploaded for this budget item (evaluated BEFORE match checks)
     // Backend sets doc_id to null when no PDF found for the budget item
@@ -167,10 +166,6 @@ function App() {
           const matchType = getMatchType(item);
           if (selectedMatchType !== matchType) return false;
         }
-
-        // Filter by agency
-        if (selectedAgency !== "all" && item.raw?.agency !== selectedAgency)
-          return false;
 
         // Filter by verification status
         if (
@@ -313,15 +308,6 @@ function App() {
             setSelectedBudgetItem={setSelectedBudgetItem}
             selectedMatchType={selectedMatchType}
             setSelectedMatchType={setSelectedMatchType}
-            agencies={[
-              ...new Set(
-                data?.line_items
-                  ?.map((item) => item.raw?.agency)
-                  .filter(Boolean) || [],
-              ),
-            ].sort()}
-            selectedAgency={selectedAgency}
-            setSelectedAgency={setSelectedAgency}
             verificationMode={verificationMode}
             setVerificationMode={setVerificationMode}
             minConfidenceScore={minConfidenceScore}

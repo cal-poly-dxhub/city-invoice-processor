@@ -6,9 +6,6 @@ function FilterBar({
   setSelectedBudgetItem,
   selectedMatchType,
   setSelectedMatchType,
-  agencies,
-  selectedAgency,
-  setSelectedAgency,
   verificationMode,
   setVerificationMode,
   minConfidenceScore,
@@ -38,20 +35,6 @@ function FilterBar({
           <option value="all">All Items</option>
           {budgetItems.map((item) => (
             <option key={item} value={item}>{item}</option>
-          ))}
-        </select>
-      </div>
-
-      <div className="filter-section">
-        <label className="filter-label">Agency</label>
-        <select
-          value={selectedAgency}
-          onChange={(e) => setSelectedAgency(e.target.value)}
-          className="filter-select"
-        >
-          <option value="all">All Agencies</option>
-          {agencies.map((agency) => (
-            <option key={agency} value={agency}>{agency}</option>
           ))}
         </select>
       </div>

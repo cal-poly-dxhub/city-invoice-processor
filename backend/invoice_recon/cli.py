@@ -46,6 +46,45 @@ logger = logging.getLogger(__name__)
 app = typer.Typer()
 
 
+def extract_entities_for_page(
+    doc_id: str,
+    budget_item: str,
+    page_number: int,
+    text: str,
+    text_source: str,
+    word_boxes: List[Dict],
+    tables: Any,
+) -> Dict[str, Any]:
+    """
+    Extract entities for a single page. Stateless — all inputs are explicit,
+    no shared mutable state. Suitable for local ThreadPoolExecutor or Lambda.
+
+    For Lambda migration: this function's signature maps directly to the event
+    payload. Swap the caller from ThreadPoolExecutor.submit to Lambda.invoke
+    and serialize/deserialize the arguments.
+
+    Returns:
+        Dict with all page data plus extracted 'entities'.
+    """
+    logger.info(f"Extracting entities from {doc_id} page {page_number} ({text_source})")
+    entities = extract_entities(
+        text,
+        budget_item,
+        page_number,
+        page_tables=tables,
+        page_doc_id=doc_id,
+    )
+    return {
+        "doc_id": doc_id,
+        "page_number": page_number,
+        "text_source": text_source,
+        "text": text,
+        "word_boxes": word_boxes,
+        "tables": tables,
+        "entities": entities,
+    }
+
+
 def index_document(
     pdf_info: Dict[str, Any],
     index_store: IndexStore,
@@ -96,43 +135,67 @@ def index_document(
     )
     index_store.upsert_document(doc_ref)
 
-    # Process each page
-    pages = []
+    # --- Phase 1: Check cache, identify pages needing entity extraction ---
+    cached_pages = {}  # page_number -> PageRecord
+    pages_needing_entities = []
+
     for page_number, text, text_source, word_boxes, tables in extracted_pages:
-        # Compute text hash
         text_sha256 = hashlib.sha256(text.encode("utf-8")).hexdigest()
 
-        # Check if entities need re-extraction
         if not index_store.should_reextract_entities(doc_id, page_number, text_sha256):
             logger.debug(f"Page {doc_id}:{page_number} unchanged, using cached entities")
             page_record = index_store.get_page(doc_id, page_number)
             if page_record:
-                pages.append(page_record)
+                cached_pages[page_number] = page_record
                 continue
 
-        # Extract entities with table context
-        logger.info(f"Extracting entities from {doc_id} page {page_number} ({text_source})")
-        entities = extract_entities(
-            text,
-            budget_item,
-            page_number,
-            page_tables=tables,
-            page_doc_id=doc_id
+        pages_needing_entities.append(
+            (page_number, text, text_source, word_boxes, tables)
         )
 
-        # Store in index
-        index_store.upsert_page(doc_id, page_number, text_source, text, entities, word_boxes, tables)
+    # --- Phase 2: Extract entities in parallel ---
+    # For Lambda migration: replace ThreadPoolExecutor with Lambda.invoke calls.
+    # Total Bedrock concurrency = MAX_WORKERS (documents) * MAX_WORKERS (pages).
+    # Tune MAX_WORKERS or add a shared semaphore based on your Bedrock quota.
+    extracted_results = {}  # page_number -> PageRecord
 
-        # Create PageRecord
-        page_record = PageRecord(
-            doc_id=doc_id,
-            page_number=page_number,
-            text_source=text_source,
-            text=text,
-            entities=entities,
-            words=word_boxes,
+    if pages_needing_entities:
+        with ThreadPoolExecutor(max_workers=Config.MAX_WORKERS) as entity_pool:
+            futures = {
+                entity_pool.submit(
+                    extract_entities_for_page,
+                    doc_id, budget_item, pg_num, text, text_source, word_boxes, tables,
+                ): pg_num
+                for pg_num, text, text_source, word_boxes, tables in pages_needing_entities
+            }
+            for future in as_completed(futures):
+                result = future.result()
+                pg_num = result["page_number"]
+                extracted_results[pg_num] = result
+
+    # --- Phase 3: Persist results and assemble pages in order ---
+    # For Lambda migration: swap index_store (SQLite) for DynamoDB writes.
+    # Writes are sequential here to avoid SQLite write-lock contention.
+    for pg_num, result in sorted(extracted_results.items()):
+        index_store.upsert_page(
+            doc_id, pg_num, result["text_source"], result["text"],
+            result["entities"], result["word_boxes"], result["tables"],
         )
-        pages.append(page_record)
+
+    pages = []
+    for page_number, *_ in extracted_pages:
+        if page_number in cached_pages:
+            pages.append(cached_pages[page_number])
+        elif page_number in extracted_results:
+            r = extracted_results[page_number]
+            pages.append(PageRecord(
+                doc_id=doc_id,
+                page_number=page_number,
+                text_source=r["text_source"],
+                text=r["text"],
+                entities=r["entities"],
+                words=r["word_boxes"],
+            ))
 
     logger.info(
         f"Completed indexing {doc_id}: {len(pages)} pages "

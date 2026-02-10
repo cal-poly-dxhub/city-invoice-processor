@@ -734,57 +734,6 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
         )}
       </div>
 
-      {item.candidates && item.candidates.length > 0 && (
-        <div className="candidates-section">
-          <h3 className="section-title">Match Evidence</h3>
-          {item.candidates.map((candidate, idx) => {
-            const candidateKey = `${item.row_id}_${idx}`
-            const displayCandidate = userEditedCandidates[candidateKey] || candidate
-            const isEdited = !!userEditedCandidates[candidateKey]
-
-            return (
-              <div
-                key={idx}
-                className={`candidate-card ${idx === selectedCandidateIdx ? 'selected-candidate' : ''} ${idx === 0 ? 'top-candidate' : ''} ${isEdited ? 'edited-candidate' : ''}`}
-                onClick={() => setSelectedCandidateIdx(idx)}
-                style={{ cursor: 'pointer' }}
-              >
-                <div className="candidate-header">
-                  <span className="candidate-rank">
-                    Candidate {idx + 1}
-                    {idx === selectedCandidateIdx && ' (Viewing)'}
-                    {isEdited && ' ✏️'}
-                  </span>
-                  <span className={`candidate-score ${getMatchClass()}`}>
-                    Score: {candidate.score?.toFixed(2) || 'N/A'}
-                  </span>
-                </div>
-                <div className="candidate-pages">
-                  Pages: {displayCandidate.page_numbers.join(', ')}
-                </div>
-                <div className="candidate-rationale">
-                  {candidate.rationale?.map((line, i) => (
-                    <div key={i} className="rationale-line">{line}</div>
-                  ))}
-                </div>
-                {isEdited && idx === selectedCandidateIdx && (
-                  <button
-                    className="reset-candidate-btn"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      resetCandidate()
-                    }}
-                    title="Reset to original candidate"
-                  >
-                    Reset to Original
-                  </button>
-                )}
-              </div>
-            )
-          })}
-        </div>
-      )}
-
       {pageNumbers.length === 0 && viewMode === 'group' ? (
         <div className="no-pages">
           <h3>No Evidence Pages</h3>

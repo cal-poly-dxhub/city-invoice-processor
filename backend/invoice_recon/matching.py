@@ -876,9 +876,9 @@ def generate_candidates_for_line_item(
     if not pages:
         return []
 
-    # Skip matching for line items with $0 amount (no transaction to verify)
-    if line_item.amount is not None and line_item.amount == 0:
-        logger.debug(f"Row {line_item.row_index}: Skipping match (amount is $0)")
+    # Skip matching for line items with blank or $0 amount (no transaction to verify)
+    if line_item.amount is None or line_item.amount == 0:
+        logger.debug(f"Row {line_item.row_index}: Skipping match (amount is {'blank' if line_item.amount is None else '$0'})")
         return []
 
     # Determine if employee-based matching

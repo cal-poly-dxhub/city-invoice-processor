@@ -2,8 +2,9 @@
 
 import hashlib
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import fitz  # PyMuPDF
 from invoice_recon.config import Config
 from invoice_recon.textract_text import extract_text_from_image_bytes, extract_text_and_words_from_image_bytes
@@ -392,95 +393,132 @@ def transform_tables_from_rotated(tables: List[TableStructure], rotation: int) -
     return transformed_tables
 
 
-def extract_page_with_fallback(
-    page, page_number: int
-) -> Tuple[str, str, List[Dict], Optional[List[TableStructure]]]:
+def prepare_page_data(page, page_number: int) -> Dict[str, Any]:
     """
-    Extract text, word boxes, and tables from a page with Textract fallback.
+    Phase 1: All PyMuPDF (fitz) work for a page. Must run sequentially
+    because fitz page objects are not thread-safe.
 
-    Strategy:
-    0. If TABLE_DETECTION_ENABLED, use Bedrock vision to detect table pages
-       - If detected as table, try PyMuPDF table extraction first
-       - If PyMuPDF succeeds, use it (free, fast)
-       - Otherwise fall back to Textract (paid, slower)
-    1. Try PyMuPDF first for text + geometry (fast, free)
-    2. If text is sufficient, use PyMuPDF geometry
-    3. If text insufficient, fall back to Textract (slow, paid)
+    Extracts text, word boxes, PyMuPDF tables, and renders PNG if API calls
+    may be needed. Returns a dict with everything resolve_page_extraction needs.
 
     Args:
         page: PyMuPDF page object
         page_number: Page number (1-based)
 
     Returns:
-        Tuple of (extracted_text, text_source, word_boxes, tables)
-        - text_source is "pymupdf", "pymupdf_table", "textract", or "textract_table"
-        - word_boxes is a list of dicts with keys: text, left, top, width, height
-          (normalized 0-1 coordinates)
-        - tables is a list of TableStructure objects
+        Dict with page data and needs_api flag indicating whether
+        resolve_page_extraction must be called.
     """
-    # Step 0: Check if table detection is enabled and detect tables
-    if Config.TABLE_DETECTION_ENABLED and Config.TEXTRACT_MODE != "never":
-        logger.debug(f"Page {page_number}: Running table detection")
-        png_bytes = render_page_to_png_bytes(page)
-        if png_bytes:
-            is_table = detect_table_page(png_bytes)
-            if is_table:
-                logger.info(f"Page {page_number}: Detected as table, trying PyMuPDF first")
-
-                # NEW: Try PyMuPDF table extraction first
-                pymupdf_tables = extract_tables_pymupdf(page)
-
-                if pymupdf_tables:
-                    # PyMuPDF succeeded, use it
-                    logger.info(
-                        f"Page {page_number}: PyMuPDF extracted {len(pymupdf_tables)} tables, "
-                        "using PyMuPDF (skipping Textract)"
-                    )
-                    pymupdf_text, pymupdf_word_boxes = extract_page_text_and_words_pymupdf(page)
-                    return (pymupdf_text, "pymupdf_table", pymupdf_word_boxes, pymupdf_tables)
-                else:
-                    # PyMuPDF failed, fall back to Textract
-                    logger.info(
-                        f"Page {page_number}: PyMuPDF table extraction insufficient, "
-                        "falling back to Textract"
-                    )
-                    textract_text, word_boxes, tables = extract_text_and_words_from_image_bytes(png_bytes)
-                    # Transform coordinates back to original mediabox space
-                    page_rotation = page.rotation
-                    word_boxes = transform_coordinates_from_rotated(word_boxes, page_rotation)
-                    tables = transform_tables_from_rotated(tables, page_rotation)
-                    return (textract_text, "textract_table", word_boxes, tables)
-        else:
-            logger.warning(f"Page {page_number}: Failed to render for table detection")
-
-    # Try PyMuPDF first (extract both text and geometry)
     pymupdf_text, pymupdf_word_boxes = extract_page_text_and_words_pymupdf(page)
-
-    # Check mode
-    if Config.TEXTRACT_MODE == "never":
-        return (pymupdf_text, "pymupdf", pymupdf_word_boxes, [])
-
-    if Config.TEXTRACT_MODE == "always":
-        # Always use Textract
-        logger.info(f"Page {page_number}: TEXTRACT_MODE=always, using Textract")
-        png_bytes = render_page_to_png_bytes(page)
-        if png_bytes:
-            textract_text, word_boxes, tables = extract_text_and_words_from_image_bytes(png_bytes)
-            # Transform coordinates back to original mediabox space
-            page_rotation = page.rotation
-            word_boxes = transform_coordinates_from_rotated(word_boxes, page_rotation)
-            tables = transform_tables_from_rotated(tables, page_rotation)
-            return (textract_text, "textract", word_boxes, tables)
-        else:
-            logger.warning(
-                f"Page {page_number}: Failed to render for Textract, "
-                "falling back to PyMuPDF"
-            )
-            return (pymupdf_text, "pymupdf", pymupdf_word_boxes, [])
-
-    # Mode is "auto" - use Textract only if PyMuPDF text OR geometry is insufficient
+    page_rotation = page.rotation
     text_sufficient = is_text_sufficient(pymupdf_text)
     has_geometry = len(pymupdf_word_boxes) > 0
+
+    pymupdf_tables = []
+    png_bytes = b""
+    needs_api = False
+
+    if Config.TEXTRACT_MODE == "never":
+        # No API calls ever needed
+        pass
+    elif Config.TABLE_DETECTION_ENABLED:
+        # Need Bedrock Vision call; pre-extract PyMuPDF tables so resolve
+        # can use them without touching fitz
+        pymupdf_tables = extract_tables_pymupdf(page)
+        png_bytes = render_page_to_png_bytes(page)
+        if png_bytes:
+            needs_api = True
+        else:
+            logger.warning(f"Page {page_number}: Failed to render for table detection")
+    elif Config.TEXTRACT_MODE == "always":
+        png_bytes = render_page_to_png_bytes(page)
+        if png_bytes:
+            needs_api = True
+        else:
+            logger.warning(
+                f"Page {page_number}: Failed to render for Textract, using PyMuPDF"
+            )
+    elif not text_sufficient or not has_geometry:
+        # auto mode, PyMuPDF insufficient — need Textract
+        png_bytes = render_page_to_png_bytes(page)
+        if png_bytes:
+            needs_api = True
+        else:
+            logger.warning(
+                f"Page {page_number}: Failed to render for Textract, using PyMuPDF"
+            )
+
+    return {
+        "page_number": page_number,
+        "pymupdf_text": pymupdf_text,
+        "pymupdf_word_boxes": pymupdf_word_boxes,
+        "pymupdf_tables": pymupdf_tables,
+        "png_bytes": png_bytes,
+        "page_rotation": page_rotation,
+        "text_sufficient": text_sufficient,
+        "has_geometry": has_geometry,
+        "needs_api": needs_api,
+    }
+
+
+def resolve_page_extraction(
+    page_data: Dict[str, Any],
+) -> Tuple[str, str, List[Dict], list]:
+    """
+    Phase 2: Make API calls (Textract, Bedrock Vision) to finalize extraction.
+
+    Stateless — no fitz dependency, no shared mutable state. All inputs come
+    from prepare_page_data. Suitable for ThreadPoolExecutor or Lambda.
+
+    For Lambda migration: this function's input dict maps directly to a Lambda
+    event payload (png_bytes would need base64 encoding). Swap the caller from
+    ThreadPoolExecutor.submit to Lambda.invoke and serialize/deserialize.
+
+    Args:
+        page_data: Dict from prepare_page_data
+
+    Returns:
+        Tuple of (text, text_source, word_boxes, tables)
+    """
+    page_number = page_data["page_number"]
+    pymupdf_text = page_data["pymupdf_text"]
+    pymupdf_word_boxes = page_data["pymupdf_word_boxes"]
+    pymupdf_tables = page_data["pymupdf_tables"]
+    png_bytes = page_data["png_bytes"]
+    page_rotation = page_data["page_rotation"]
+    text_sufficient = page_data["text_sufficient"]
+    has_geometry = page_data["has_geometry"]
+
+    # Table detection path
+    if Config.TABLE_DETECTION_ENABLED and Config.TEXTRACT_MODE != "never" and png_bytes:
+        logger.debug(f"Page {page_number}: Running table detection")
+        is_table = detect_table_page(png_bytes)
+        if is_table:
+            logger.info(f"Page {page_number}: Detected as table, checking PyMuPDF tables")
+            if pymupdf_tables:
+                logger.info(
+                    f"Page {page_number}: PyMuPDF extracted {len(pymupdf_tables)} tables, "
+                    "using PyMuPDF (skipping Textract)"
+                )
+                return (pymupdf_text, "pymupdf_table", pymupdf_word_boxes, pymupdf_tables)
+            else:
+                logger.info(
+                    f"Page {page_number}: PyMuPDF table extraction insufficient, "
+                    "falling back to Textract"
+                )
+                textract_text, word_boxes, tables = extract_text_and_words_from_image_bytes(png_bytes)
+                word_boxes = transform_coordinates_from_rotated(word_boxes, page_rotation)
+                tables = transform_tables_from_rotated(tables, page_rotation)
+                return (textract_text, "textract_table", word_boxes, tables)
+        # Not a table — fall through to standard path
+
+    # Standard path
+    if Config.TEXTRACT_MODE == "always" and png_bytes:
+        logger.info(f"Page {page_number}: TEXTRACT_MODE=always, using Textract")
+        textract_text, word_boxes, tables = extract_text_and_words_from_image_bytes(png_bytes)
+        word_boxes = transform_coordinates_from_rotated(word_boxes, page_rotation)
+        tables = transform_tables_from_rotated(tables, page_rotation)
+        return (textract_text, "textract", word_boxes, tables)
 
     if text_sufficient and has_geometry:
         logger.debug(
@@ -489,31 +527,28 @@ def extract_page_with_fallback(
         )
         return (pymupdf_text, "pymupdf", pymupdf_word_boxes, [])
 
-    # PyMuPDF text or geometry insufficient, fall back to Textract
-    if not text_sufficient:
-        logger.info(
-            f"Page {page_number}: PyMuPDF text insufficient "
-            f"({len(pymupdf_text)} chars), falling back to Textract"
-        )
-    else:
-        logger.info(
-            f"Page {page_number}: PyMuPDF geometry missing "
-            f"(0 word boxes), falling back to Textract"
-        )
-    png_bytes = render_page_to_png_bytes(page)
+    # Textract fallback for insufficient PyMuPDF results
     if png_bytes:
+        if not text_sufficient:
+            logger.info(
+                f"Page {page_number}: PyMuPDF text insufficient "
+                f"({len(pymupdf_text)} chars), falling back to Textract"
+            )
+        else:
+            logger.info(
+                f"Page {page_number}: PyMuPDF geometry missing "
+                f"(0 word boxes), falling back to Textract"
+            )
         textract_text, word_boxes, tables = extract_text_and_words_from_image_bytes(png_bytes)
-        # Transform coordinates back to original mediabox space
-        page_rotation = page.rotation
         word_boxes = transform_coordinates_from_rotated(word_boxes, page_rotation)
         tables = transform_tables_from_rotated(tables, page_rotation)
         return (textract_text, "textract", word_boxes, tables)
-    else:
-        logger.warning(
-            f"Page {page_number}: Failed to render for Textract, "
-            "using PyMuPDF text anyway"
-        )
-        return (pymupdf_text, "pymupdf", pymupdf_word_boxes, [])
+
+    # No PNG available, use PyMuPDF anyway
+    logger.warning(
+        f"Page {page_number}: No PNG available for Textract, using PyMuPDF text anyway"
+    )
+    return (pymupdf_text, "pymupdf", pymupdf_word_boxes, [])
 
 
 def extract_pdf_pages(
@@ -521,6 +556,14 @@ def extract_pdf_pages(
 ) -> List[Tuple[int, str, str, List[Dict], Optional[List[TableStructure]]]]:
     """
     Extract text, word boxes, and tables from all pages of a PDF.
+
+    Uses a two-phase approach:
+    - Phase 1 (sequential): PyMuPDF prep for all pages (fitz is not thread-safe)
+    - Phase 2 (parallel): API calls (Textract, Bedrock Vision) for pages that need them
+
+    For Lambda migration: Phase 1 runs in a single Lambda that opens the PDF
+    from S3. Phase 2 fans out to per-page Lambdas via Step Functions Map state.
+    png_bytes would need base64 encoding in the event payload.
 
     Args:
         pdf_path: Path to PDF file
@@ -534,26 +577,50 @@ def extract_pdf_pages(
     if not pdf_path.exists():
         raise FileNotFoundError(f"PDF not found: {pdf_path}")
 
-    results = []
-
     try:
         doc = fitz.open(pdf_path)
+        page_count = len(doc)
 
-        for page_index in range(len(doc)):
-            page_number = page_index + 1  # 1-based
+        # Phase 1: Prepare all pages sequentially (fitz is not thread-safe)
+        pages_needing_api = []
+        resolved = {}  # page_number -> (text, text_source, word_boxes, tables)
+
+        for page_index in range(page_count):
+            page_number = page_index + 1
             page = doc[page_index]
+            page_data = prepare_page_data(page, page_number)
 
-            text, text_source, word_boxes, tables = extract_page_with_fallback(page, page_number)
-
-            results.append((page_number, text, text_source, word_boxes, tables))
+            if page_data["needs_api"]:
+                pages_needing_api.append(page_data)
+            else:
+                resolved[page_number] = (
+                    page_data["pymupdf_text"], "pymupdf",
+                    page_data["pymupdf_word_boxes"], [],
+                )
 
         doc.close()
+
+        # Phase 2: Resolve pages needing API calls in parallel
+        # For Lambda migration: replace ThreadPoolExecutor with Lambda.invoke.
+        if pages_needing_api:
+            with ThreadPoolExecutor(max_workers=Config.MAX_WORKERS) as pool:
+                futures = {
+                    pool.submit(resolve_page_extraction, pd): pd["page_number"]
+                    for pd in pages_needing_api
+                }
+                for future in as_completed(futures):
+                    pg_num = futures[future]
+                    resolved[pg_num] = future.result()
+
+        # Phase 3: Assemble in page order
+        return [
+            (pg_num, *resolved[pg_num])
+            for pg_num in range(1, page_count + 1)
+        ]
 
     except Exception as e:
         logger.error(f"Failed to process PDF {pdf_path}: {e}")
         raise
-
-    return results
 
 
 def get_pdf_page_count(pdf_path: Path) -> int:
