@@ -633,124 +633,129 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
               return (
                 <div key={pageNum} className="page-container">
                   <div className="page-header">
-                    <div className="page-info-group">
-                      <span className="page-number">Page {pageNum}</span>
-                      {viewMode === 'group' && pageNumbers.length > 1 && (
-                        <span className="page-counter">
-                          ({currentPageIdx + 1} / {pageNumbers.length} in group)
-                        </span>
-                      )}
-                      {viewMode === 'all' && (
-                        <span className="page-counter">
-                          ({allPagesCurrentPage} / {totalPages} total)
-                        </span>
-                      )}
-                      {viewMode === 'search' && (
-                        <span className="page-counter">
-                          ({searchPageIdx + 1} / {searchResultPages.length} results)
-                        </span>
-                      )}
-                    </div>
+                    <div className="page-header-row page-nav-row">
+                      <div className="page-info-group">
+                        <span className="page-number">Page {pageNum}</span>
+                        {viewMode === 'group' && pageNumbers.length > 1 && (
+                          <span className="page-counter">
+                            ({currentPageIdx + 1} / {pageNumbers.length} in group)
+                          </span>
+                        )}
+                        {viewMode === 'all' && (
+                          <span className="page-counter">
+                            ({allPagesCurrentPage} / {totalPages} total)
+                          </span>
+                        )}
+                        {viewMode === 'search' && (
+                          <span className="page-counter">
+                            ({searchPageIdx + 1} / {searchResultPages.length} results)
+                          </span>
+                        )}
+                      </div>
 
-                    {doc && doc.pages_data && (
-                      <SearchBar
-                        query={searchQuery}
-                        onQueryChange={setSearchQuery}
-                        resultSummary={null}
-                      />
-                    )}
-
-                    <div className="view-mode-toggle">
-                      <button
-                        className={`mode-btn ${viewMode === 'group' ? 'active' : ''} ${viewMode === 'all' ? 'active' : ''} ${viewMode === 'search' ? 'active' : ''}`}
-                        onClick={toggleViewMode}
-                        title="Switch view mode"
-                      >
-                        {viewMode === 'group' ? 'Group View' : viewMode === 'all' ? 'All Pages' : 'Search Results'}
-                      </button>
-                    </div>
-
-                    {selectedCandidate && (
-                      <div className="page-edit-controls">
-                        {viewMode === 'group' ? (
+                      {((viewMode === 'group' && pageNumbers.length > 1) || viewMode === 'all' || (viewMode === 'search' && searchResultPages.length > 1)) && (
+                        <div className="page-navigation">
                           <button
-                            className="page-edit-btn remove-btn"
-                            onClick={() => removePageFromGroup(pageNum)}
-                            disabled={pageNumbers.length <= 1}
-                            title={pageNumbers.length <= 1 ? "Cannot remove the last page from group" : "Remove this page from the evidence group"}
+                            className="nav-btn nav-btn-prev"
+                            onClick={goToPreviousPage}
+                            disabled={isFirstPage}
+                            title="Previous page"
                           >
-                            Remove from Group
+                            ←
                           </button>
-                        ) : (
-                          isPageInGroup(allPagesCurrentPage) ? (
+                          <button
+                            className="nav-btn nav-btn-next"
+                            onClick={goToNextPage}
+                            disabled={isLastPage}
+                            title="Next page"
+                          >
+                            →
+                          </button>
+                        </div>
+                      )}
+
+                      <div className="rotation-controls">
+                        <button
+                          className="rotation-btn"
+                          onClick={() => rotatePage(pageNum, 'ccw')}
+                          title="Rotate counter-clockwise"
+                        >
+                          ↶
+                        </button>
+                        <button
+                          className="rotation-btn"
+                          onClick={() => rotatePage(pageNum, 'cw')}
+                          title="Rotate clockwise"
+                        >
+                          ↷
+                        </button>
+                      </div>
+
+                    </div>
+
+                    <div className="page-header-row page-actions-row">
+                      <span className="doc-name">{doc?.budget_item}</span>
+
+                      <div className="view-mode-toggle">
+                        <button
+                          className={`mode-btn ${viewMode === 'group' ? 'active' : ''} ${viewMode === 'all' ? 'active' : ''} ${viewMode === 'search' ? 'active' : ''}`}
+                          onClick={toggleViewMode}
+                          title="Switch view mode"
+                        >
+                          {viewMode === 'group' ? 'Group View' : viewMode === 'all' ? 'All Pages' : 'Search Results'}
+                        </button>
+                      </div>
+
+                      {doc && doc.pages_data && (
+                        <SearchBar
+                          query={searchQuery}
+                          onQueryChange={setSearchQuery}
+                          resultSummary={null}
+                        />
+                      )}
+
+                      {selectedCandidate && (
+                        <div className="page-edit-controls">
+                          {viewMode === 'group' ? (
                             <button
                               className="page-edit-btn remove-btn"
-                              onClick={() => removePageFromGroup(allPagesCurrentPage)}
+                              onClick={() => removePageFromGroup(pageNum)}
                               disabled={pageNumbers.length <= 1}
                               title={pageNumbers.length <= 1 ? "Cannot remove the last page from group" : "Remove this page from the evidence group"}
                             >
                               Remove from Group
                             </button>
                           ) : (
-                            <button
-                              className="page-edit-btn add-btn"
-                              onClick={() => addPageToGroup(allPagesCurrentPage)}
-                              title="Add this page to the evidence group"
-                            >
-                              Add to Group
-                            </button>
-                          )
-                        )}
-                      </div>
-                    )}
+                            isPageInGroup(allPagesCurrentPage) ? (
+                              <button
+                                className="page-edit-btn remove-btn"
+                                onClick={() => removePageFromGroup(allPagesCurrentPage)}
+                                disabled={pageNumbers.length <= 1}
+                                title={pageNumbers.length <= 1 ? "Cannot remove the last page from group" : "Remove this page from the evidence group"}
+                              >
+                                Remove from Group
+                              </button>
+                            ) : (
+                              <button
+                                className="page-edit-btn add-btn"
+                                onClick={() => addPageToGroup(allPagesCurrentPage)}
+                                title="Add this page to the evidence group"
+                              >
+                                Add to Group
+                              </button>
+                            )
+                          )}
+                        </div>
+                      )}
 
-                    {((viewMode === 'group' && pageNumbers.length > 1) || viewMode === 'all' || (viewMode === 'search' && searchResultPages.length > 1)) && (
-                      <div className="page-navigation">
-                        <button
-                          className="nav-btn nav-btn-prev"
-                          onClick={goToPreviousPage}
-                          disabled={isFirstPage}
-                          title="Previous page"
-                        >
-                          ←
-                        </button>
-                        <button
-                          className="nav-btn nav-btn-next"
-                          onClick={goToNextPage}
-                          disabled={isLastPage}
-                          title="Next page"
-                        >
-                          →
-                        </button>
-                      </div>
-                    )}
-
-                    <div className="rotation-controls">
                       <button
-                        className="rotation-btn"
-                        onClick={() => rotatePage(pageNum, 'ccw')}
-                        title="Rotate counter-clockwise"
+                        className={`mark-done-btn ${isCompleted ? 'completed' : ''}`}
+                        onClick={() => onMarkGroupDone(item.row_id)}
+                        title={isCompleted ? "This line item is already marked as done" : "Mark this line item as verified and move to next item"}
                       >
-                        ↶
-                      </button>
-                      <button
-                        className="rotation-btn"
-                        onClick={() => rotatePage(pageNum, 'cw')}
-                        title="Rotate clockwise"
-                      >
-                        ↷
+                        {isCompleted ? '✓ Done' : 'Mark Line Item Done'}
                       </button>
                     </div>
-
-                    <button
-                      className={`mark-done-btn ${isCompleted ? 'completed' : ''}`}
-                      onClick={() => onMarkGroupDone(item.row_id)}
-                      title={isCompleted ? "This line item is already marked as done" : "Mark this line item as verified and move to next item"}
-                    >
-                      {isCompleted ? '✓ Done' : 'Mark Line Item Done'}
-                    </button>
-
-                    <span className="doc-name">{doc?.budget_item}</span>
                   </div>
                   <div
                     className="page-canvas-wrapper"
