@@ -133,7 +133,7 @@ Respond with a JSON object containing:
 
     try:
         response = client.invoke_model(
-            modelId=Config.BEDROCK_MODEL_ID,
+            modelId=Config.BEDROCK_VISION_MODEL_ID,
             body=json.dumps(request_body)
         )
 

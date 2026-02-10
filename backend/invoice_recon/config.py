@@ -25,6 +25,11 @@ class Config:
         "BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
     )
 
+    # Bedrock Vision Model (for table detection - faster/cheaper than main model)
+    BEDROCK_VISION_MODEL_ID: str = os.getenv(
+        "BEDROCK_VISION_MODEL_ID", "us.amazon.nova-lite-v1:0"
+    )
+
     # Text Extraction
     TEXT_MIN_CHARS: int = int(os.getenv("TEXT_MIN_CHARS", "40"))
     TEXTRACT_MODE: str = os.getenv("TEXTRACT_MODE", "auto")  # auto, always, never

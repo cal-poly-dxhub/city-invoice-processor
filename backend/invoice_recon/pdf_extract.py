@@ -99,28 +99,10 @@ def extract_page_text_and_words_pymupdf(page) -> Tuple[str, List[Dict]]:
 
 
 def render_page_to_png_bytes(page, dpi: int = 200) -> bytes:
-    """
-    Render a PyMuPDF page to PNG bytes in the original (unrotated) orientation.
-
-    IMPORTANT: Renders the page at 0° rotation (ignoring inherent rotation) so that
-    Textract returns coordinates in the same coordinate space as PyMuPDF's get_text("words"),
-    which uses the original mediabox dimensions.
-    """
+    """Render a PyMuPDF page to PNG bytes."""
     try:
-        # Save original rotation
-        original_rotation = page.rotation
-
-        # Temporarily set rotation to 0 to render in original orientation
-        page.set_rotation(0)
-
-        # Render the page
         pixmap = page.get_pixmap(dpi=dpi)
-        png_bytes = pixmap.tobytes("png")
-
-        # Restore original rotation
-        page.set_rotation(original_rotation)
-
-        return png_bytes
+        return pixmap.tobytes("png")
     except Exception as e:
         logger.error(f"Page rendering failed: {e}")
         return b""
@@ -290,6 +272,126 @@ def extract_tables_pymupdf(page) -> List[TableStructure]:
         return []
 
 
+def transform_bbox_from_rotated(bbox: Dict[str, float], rotation: int) -> Dict[str, float]:
+    """
+    Transform a single bounding box from rotated space to original mediabox space.
+
+    Args:
+        bbox: Dict with keys: left, top, width, height (normalized 0-1)
+        rotation: Page rotation in degrees (0, 90, 180, 270)
+
+    Returns:
+        Transformed bounding box
+    """
+    if rotation == 0:
+        return bbox
+
+    left, top, width, height = bbox['left'], bbox['top'], bbox['width'], bbox['height']
+
+    if rotation == 90:
+        # Inverse of (x,y) → (1-y-h, x)
+        return {
+            'left': top,
+            'top': 1 - left - width,
+            'width': height,
+            'height': width
+        }
+    elif rotation == 180:
+        # Inverse of (x,y) → (1-x-w, 1-y-h)
+        return {
+            'left': 1 - left - width,
+            'top': 1 - top - height,
+            'width': width,
+            'height': height
+        }
+    elif rotation == 270:
+        # Inverse of (x,y) → (y, 1-x-w)
+        return {
+            'left': 1 - top - height,
+            'top': left,
+            'width': height,
+            'height': width
+        }
+    else:
+        return bbox
+
+
+def transform_coordinates_from_rotated(word_boxes: List[Dict], rotation: int) -> List[Dict]:
+    """
+    Transform word boxes from rotated space back to original (0°) mediabox space.
+
+    When Textract processes a rotated PNG, it returns coordinates relative to the
+    rotated image. This function transforms them back to match PyMuPDF's coordinate
+    space (original mediabox).
+
+    Args:
+        word_boxes: List of word boxes with normalized (0-1) coordinates
+        rotation: Page rotation in degrees (0, 90, 180, 270)
+
+    Returns:
+        Transformed word boxes in original coordinate space
+    """
+    if rotation == 0:
+        return word_boxes
+
+    transformed = []
+    for box in word_boxes:
+        new_bbox = transform_bbox_from_rotated(
+            {'left': box['left'], 'top': box['top'], 'width': box['width'], 'height': box['height']},
+            rotation
+        )
+        transformed.append({
+            'text': box['text'],
+            **new_bbox
+        })
+
+    return transformed
+
+
+def transform_tables_from_rotated(tables: List[TableStructure], rotation: int) -> List[TableStructure]:
+    """
+    Transform table structures from rotated space to original mediabox space.
+
+    Args:
+        tables: List of TableStructure objects
+        rotation: Page rotation in degrees (0, 90, 180, 270)
+
+    Returns:
+        Transformed table structures
+    """
+    if rotation == 0:
+        return tables
+
+    transformed_tables = []
+    for table in tables:
+        # Transform table bounding box
+        new_table_bbox = transform_bbox_from_rotated(table.bbox, rotation)
+
+        # Transform each cell
+        new_cells = []
+        for cell in table.cells:
+            new_cell_bbox = transform_bbox_from_rotated(cell.bbox, rotation)
+            new_cells.append(TableCell(
+                row_index=cell.row_index,
+                col_index=cell.col_index,
+                row_span=cell.row_span,
+                col_span=cell.col_span,
+                text=cell.text,
+                bbox=new_cell_bbox,
+                word_ids=cell.word_ids
+            ))
+
+        transformed_tables.append(TableStructure(
+            table_id=table.table_id,
+            cells=new_cells,
+            row_count=table.row_count,
+            col_count=table.col_count,
+            bbox=new_table_bbox
+        ))
+
+    return transformed_tables
+
+
 def extract_page_with_fallback(
     page, page_number: int
 ) -> Tuple[str, str, List[Dict], Optional[List[TableStructure]]]:
@@ -343,6 +445,10 @@ def extract_page_with_fallback(
                         "falling back to Textract"
                     )
                     textract_text, word_boxes, tables = extract_text_and_words_from_image_bytes(png_bytes)
+                    # Transform coordinates back to original mediabox space
+                    page_rotation = page.rotation
+                    word_boxes = transform_coordinates_from_rotated(word_boxes, page_rotation)
+                    tables = transform_tables_from_rotated(tables, page_rotation)
                     return (textract_text, "textract_table", word_boxes, tables)
         else:
             logger.warning(f"Page {page_number}: Failed to render for table detection")
@@ -360,6 +466,10 @@ def extract_page_with_fallback(
         png_bytes = render_page_to_png_bytes(page)
         if png_bytes:
             textract_text, word_boxes, tables = extract_text_and_words_from_image_bytes(png_bytes)
+            # Transform coordinates back to original mediabox space
+            page_rotation = page.rotation
+            word_boxes = transform_coordinates_from_rotated(word_boxes, page_rotation)
+            tables = transform_tables_from_rotated(tables, page_rotation)
             return (textract_text, "textract", word_boxes, tables)
         else:
             logger.warning(
@@ -393,6 +503,10 @@ def extract_page_with_fallback(
     png_bytes = render_page_to_png_bytes(page)
     if png_bytes:
         textract_text, word_boxes, tables = extract_text_and_words_from_image_bytes(png_bytes)
+        # Transform coordinates back to original mediabox space
+        page_rotation = page.rotation
+        word_boxes = transform_coordinates_from_rotated(word_boxes, page_rotation)
+        tables = transform_tables_from_rotated(tables, page_rotation)
         return (textract_text, "textract", word_boxes, tables)
     else:
         logger.warning(

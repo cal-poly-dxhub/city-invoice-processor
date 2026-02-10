@@ -173,15 +173,15 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
       const inherentRotation = page.rotate || 0
       pageInherentRotations.current[pageNum] = inherentRotation
 
-      // Render PDF ignoring inherent rotation (at 0° by default) to match backend coordinates
-      // Backend extracts coordinates from the unrotated page (both PyMuPDF and Textract)
-      // PDF.js getViewport() includes inherent rotation by default, so we counteract it
-      // by passing negative inherent rotation, then add user rotation
+      // Render PDF with proper rotation handling
+      // If no user rotation: omit rotation param so PDF.js uses inherent rotation
+      // If user rotation: add it to inherent rotation
       const userRotation = pageRotations[pageNum] || 0
-      const totalRotation = -inherentRotation + userRotation
-      const viewport = page.getViewport({ scale: 1.5, rotation: totalRotation })
+      const viewport = userRotation === 0
+        ? page.getViewport({ scale: 1.5 })  // Let PDF.js apply inherent rotation
+        : page.getViewport({ scale: 1.5, rotation: inherentRotation + userRotation })
 
-      console.log(`PDFViewer: Rendering page ${pageNum}, inherent=${inherentRotation}° (counteracted), user=${userRotation}°, total=${totalRotation}°, viewport=${viewport.width}x${viewport.height}`)
+      console.log(`PDFViewer: Rendering page ${pageNum}, inherent=${inherentRotation}°, user=${userRotation}°, viewport=${viewport.width}x${viewport.height}`)
 
       const context = canvas.getContext('2d')
 
@@ -775,12 +775,13 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
                             return null
                           }
 
-                          // Transform highlight coordinates based on user rotation only
+                          // Transform highlight coordinates based on total rotation (inherent + user)
                           // Backend coordinates are in original (0° rotation) mediabox space
-                          // PDF is rendered with inherent rotation ignored (line 180), so highlights
-                          // should only be transformed by user rotation to match the rendered page
+                          // PDF is rendered with inherent + user rotation applied
+                          const inherentRotation = pageInherentRotations.current[pageNum] || 0
                           const userRotation = pageRotations[pageNum] || 0
-                          const transformedRect = transformHighlight(rect, userRotation)
+                          const totalRotation = inherentRotation + userRotation
+                          const transformedRect = transformHighlight(rect, totalRotation)
 
                           // Get viewport dimensions for this page
                           const viewport = viewportDimensions[pageNum]
@@ -819,9 +820,11 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
 
                         {/* Render search highlights (cyan) */}
                         {searchResults[pageNum]?.map((rect, idx) => {
-                          // Apply same transformation as candidate highlights (only user rotation)
+                          // Apply same transformation as candidate highlights (inherent + user rotation)
+                          const inherentRotation = pageInherentRotations.current[pageNum] || 0
                           const userRotation = pageRotations[pageNum] || 0
-                          const transformedRect = transformHighlight(rect, userRotation)
+                          const totalRotation = inherentRotation + userRotation
+                          const transformedRect = transformHighlight(rect, totalRotation)
 
                           const viewport = viewportDimensions[pageNum]
                           if (!viewport) return null
