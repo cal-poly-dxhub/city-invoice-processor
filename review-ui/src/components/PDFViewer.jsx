@@ -21,17 +21,22 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
   const [userEditedCandidates, setUserEditedCandidates] = useState({}) // Track user modifications: { [candidateKey]: { ...candidate, page_numbers: [...], edited: true } }
   const [searchQuery, setSearchQuery] = useState('') // User's search query
   const [searchResults, setSearchResults] = useState({}) // Search results: { page_number: [boxes] }
+  const [userAnnotations, setUserAnnotations] = useState({}) // User-drawn highlights: { [candidateKey]: { [pageNum]: [ {left, top, width, height} ] } }
+  const [drawingMode, setDrawingMode] = useState(false) // Whether drawing mode is active
+  const [drawingRect, setDrawingRect] = useState(null) // Pixel coords of in-progress rubber-band rect
   const pageInherentRotations = useRef({}) // Track PDF's inherent rotation
   const canvasRefs = useRef({})
   const containerRefs = useRef({})
+  const drawingStartRef = useRef(null) // { startX, startY } during active drag
 
   // Helper to get current candidate (merged with user edits)
   const getCurrentCandidate = () => {
-    const candidate = item.candidates?.[selectedCandidateIdx]
-    if (!candidate) return null
-
     const candidateKey = `${item.row_id}_${selectedCandidateIdx}`
-    return userEditedCandidates[candidateKey] || candidate
+    // Check user edits first — may contain a user-created candidate when none existed originally
+    if (userEditedCandidates[candidateKey]) {
+      return userEditedCandidates[candidateKey]
+    }
+    return item.candidates?.[selectedCandidateIdx] || null
   }
 
   // Get doc and pages from the selected candidate (not selected_evidence)
@@ -59,6 +64,8 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
       setSearchResults({})
       setSearchPageIdx(0)
       setHighlights({}) // Clear old highlights to prevent stale data
+      setDrawingMode(false)
+      setDrawingRect(null)
     }
     loadPDF()
   }, [item.row_id])
@@ -392,6 +399,41 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
     }
   }
 
+  const reverseTransformHighlight = (rect, rotation) => {
+    // Inverse of transformHighlight: display coords -> original (0°) coords
+    const normalizedRotation = ((rotation % 360) + 360) % 360
+    switch (normalizedRotation) {
+      case 90:
+        // Forward 90°: (x,y,w,h) -> (1-y-h, x, h, w)
+        // Reverse: (x,y,w,h) -> (y, 1-x-w, h, w)
+        return {
+          left: rect.top,
+          top: 1 - rect.left - rect.width,
+          width: rect.height,
+          height: rect.width
+        }
+      case 180:
+        // Forward 180° is self-inverse
+        return {
+          left: 1 - rect.left - rect.width,
+          top: 1 - rect.top - rect.height,
+          width: rect.width,
+          height: rect.height
+        }
+      case 270:
+        // Forward 270°: (x,y,w,h) -> (y, 1-x-w, h, w)
+        // Reverse: (x,y,w,h) -> (1-y-h, x, h, w)
+        return {
+          left: 1 - rect.top - rect.height,
+          top: rect.left,
+          width: rect.height,
+          height: rect.width
+        }
+      default:
+        return rect
+    }
+  }
+
   const rotatePage = (pageNum, direction) => {
     // Rotate page by 90° in specified direction ('cw' or 'ccw')
     setPageRotations(prev => {
@@ -435,11 +477,15 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
       const closestIdx = pageNumbers.findIndex(p => p >= allPagesCurrentPage)
       setCurrentPageIdx(closestIdx >= 0 ? closestIdx : 0)
       setViewMode('group')
+      setDrawingMode(false)
+      setDrawingRect(null)
     } else if (viewMode === 'search') {
       // Switching from search view: clear search and go to group view
       setSearchQuery('')
       setSearchResults({})
       setViewMode('group')
+      setDrawingMode(false)
+      setDrawingRect(null)
     }
   }
 
@@ -452,19 +498,35 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
   // Add a page to the current candidate group
   const addPageToGroup = (pageNum) => {
     const candidate = getCurrentCandidate()
-    if (!candidate) return
-
     const candidateKey = `${item.row_id}_${selectedCandidateIdx}`
-    const newPageNumbers = [...candidate.page_numbers, pageNum].sort((a, b) => a - b)
 
-    setUserEditedCandidates({
-      ...userEditedCandidates,
-      [candidateKey]: {
-        ...candidate,
-        page_numbers: newPageNumbers,
-        edited: true
-      }
-    })
+    if (candidate) {
+      // Existing candidate: add page to its list
+      const newPageNumbers = [...candidate.page_numbers, pageNum].sort((a, b) => a - b)
+      setUserEditedCandidates({
+        ...userEditedCandidates,
+        [candidateKey]: {
+          ...candidate,
+          page_numbers: newPageNumbers,
+          edited: true
+        }
+      })
+    } else {
+      // No candidate exists: create a new user-generated one
+      const docId = doc?.doc_id || item.selected_evidence?.doc_id || item.budget_item
+      setUserEditedCandidates({
+        ...userEditedCandidates,
+        [candidateKey]: {
+          doc_id: docId,
+          page_numbers: [pageNum],
+          score: null,
+          rationale: ['Manually added by user'],
+          highlights: {},
+          evidence_snippets: [],
+          edited: true
+        }
+      })
+    }
   }
 
   // Remove a page from the current candidate group
@@ -472,22 +534,25 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
     const candidate = getCurrentCandidate()
     if (!candidate) return
 
-    // Prevent removing last page
-    if (candidate.page_numbers.length <= 1) {
-      return
-    }
-
     const candidateKey = `${item.row_id}_${selectedCandidateIdx}`
     const newPageNumbers = candidate.page_numbers.filter(p => p !== pageNum)
 
-    setUserEditedCandidates({
-      ...userEditedCandidates,
-      [candidateKey]: {
-        ...candidate,
-        page_numbers: newPageNumbers,
-        edited: true
-      }
-    })
+    if (newPageNumbers.length === 0) {
+      // Last page removed: delete the entire candidate/group
+      const newEdits = { ...userEditedCandidates }
+      delete newEdits[candidateKey]
+      setUserEditedCandidates(newEdits)
+      setViewMode('all')
+    } else {
+      setUserEditedCandidates({
+        ...userEditedCandidates,
+        [candidateKey]: {
+          ...candidate,
+          page_numbers: newPageNumbers,
+          edited: true
+        }
+      })
+    }
   }
 
   // Reset candidate back to original
@@ -496,6 +561,96 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
     const newEdits = { ...userEditedCandidates }
     delete newEdits[candidateKey]
     setUserEditedCandidates(newEdits)
+  }
+
+  // Drawing event handlers for user annotations
+  const handleDrawStart = (e, pageNum) => {
+    const rect = e.currentTarget.getBoundingClientRect()
+    const x = e.clientX - rect.left
+    const y = e.clientY - rect.top
+    drawingStartRef.current = { startX: x, startY: y }
+    setDrawingRect(null)
+  }
+
+  const handleDrawMove = (e, pageNum) => {
+    if (!drawingStartRef.current) return
+    const rect = e.currentTarget.getBoundingClientRect()
+    const x = e.clientX - rect.left
+    const y = e.clientY - rect.top
+
+    const left = Math.min(drawingStartRef.current.startX, x)
+    const top = Math.min(drawingStartRef.current.startY, y)
+    const width = Math.abs(x - drawingStartRef.current.startX)
+    const height = Math.abs(y - drawingStartRef.current.startY)
+
+    setDrawingRect({ left, top, width, height })
+  }
+
+  const handleDrawEnd = (e, pageNum) => {
+    if (!drawingStartRef.current) return
+    const currentRect = drawingRect
+    drawingStartRef.current = null
+    setDrawingRect(null)
+
+    if (!currentRect || currentRect.width < 5 || currentRect.height < 5) return
+
+    // Convert pixel coordinates to normalized 0-1 coordinates
+    const viewport = viewportDimensions[pageNum]
+    const canvas = canvasRefs.current[pageNum]
+    if (!viewport || !canvas) return
+
+    const scaleX = canvas.offsetWidth / canvas.width
+    const scaleY = canvas.offsetHeight / canvas.height
+
+    let normalizedRect = {
+      left: currentRect.left / (viewport.width * scaleX),
+      top: currentRect.top / (viewport.height * scaleY),
+      width: currentRect.width / (viewport.width * scaleX),
+      height: currentRect.height / (viewport.height * scaleY),
+    }
+
+    // Reverse the total rotation (inherent + user) so stored coords are in original (0-deg) space
+    const inherentRotation = pageInherentRotations.current[pageNum] || 0
+    const userRotation = pageRotations[pageNum] || 0
+    const totalRotation = inherentRotation + userRotation
+    if (totalRotation !== 0) {
+      normalizedRect = reverseTransformHighlight(normalizedRect, totalRotation)
+    }
+
+    // Store the annotation
+    const candidateKey = `${item.row_id}_${selectedCandidateIdx}`
+    setUserAnnotations(prev => {
+      const candidateAnnotations = prev[candidateKey] || {}
+      const pageAnnotations = candidateAnnotations[pageNum] || []
+      return {
+        ...prev,
+        [candidateKey]: {
+          ...candidateAnnotations,
+          [pageNum]: [...pageAnnotations, normalizedRect]
+        }
+      }
+    })
+
+    // Auto-add page to group if not already in it
+    if (!isPageInGroup(pageNum)) {
+      addPageToGroup(pageNum)
+    }
+  }
+
+  const deleteAnnotation = (pageNum, annotationIdx) => {
+    const candidateKey = `${item.row_id}_${selectedCandidateIdx}`
+    setUserAnnotations(prev => {
+      const candidateAnnotations = prev[candidateKey] || {}
+      const pageAnnotations = [...(candidateAnnotations[pageNum] || [])]
+      pageAnnotations.splice(annotationIdx, 1)
+      return {
+        ...prev,
+        [candidateKey]: {
+          ...candidateAnnotations,
+          [pageNum]: pageAnnotations
+        }
+      }
+    })
   }
 
 
@@ -720,8 +875,7 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
                             <button
                               className="page-edit-btn remove-btn"
                               onClick={() => removePageFromGroup(pageNum)}
-                              disabled={pageNumbers.length <= 1}
-                              title={pageNumbers.length <= 1 ? "Cannot remove the last page from group" : "Remove this page from the evidence group"}
+                              title="Remove this page from the evidence group"
                             >
                               Remove from Group
                             </button>
@@ -730,8 +884,7 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
                               <button
                                 className="page-edit-btn remove-btn"
                                 onClick={() => removePageFromGroup(allPagesCurrentPage)}
-                                disabled={pageNumbers.length <= 1}
-                                title={pageNumbers.length <= 1 ? "Cannot remove the last page from group" : "Remove this page from the evidence group"}
+                                title="Remove this page from the evidence group"
                               >
                                 Remove from Group
                               </button>
@@ -746,6 +899,16 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
                             )
                           )}
                         </div>
+                      )}
+
+                      {(viewMode === 'all' || viewMode === 'search') && (
+                        <button
+                          className={`draw-mode-btn ${drawingMode ? 'active' : ''}`}
+                          onClick={() => setDrawingMode(prev => !prev)}
+                          title={drawingMode ? 'Exit drawing mode' : 'Draw highlight boxes on the page'}
+                        >
+                          {drawingMode ? 'Done Drawing' : 'Draw Highlight'}
+                        </button>
                       )}
 
                       <button
@@ -858,7 +1021,77 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
                             />
                           )
                         })}
+
+                        {/* Render user-drawn annotations (green) */}
+                        {(() => {
+                          const candidateKey = `${item.row_id}_${selectedCandidateIdx}`
+                          const annotations = userAnnotations[candidateKey]?.[pageNum] || []
+                          return annotations.map((rect, idx) => {
+                            const inherentRotation = pageInherentRotations.current[pageNum] || 0
+                            const userRotation = pageRotations[pageNum] || 0
+                            const totalRotation = inherentRotation + userRotation
+                            const transformedRect = transformHighlight(rect, totalRotation)
+
+                            const viewport = viewportDimensions[pageNum]
+                            if (!viewport) return null
+
+                            const canvas = canvasRefs.current[pageNum]
+                            if (!canvas) return null
+
+                            const scaleX = canvas.offsetWidth / canvas.width
+                            const scaleY = canvas.offsetHeight / canvas.height
+
+                            const pixelLeft = transformedRect.left * viewport.width * scaleX
+                            const pixelTop = transformedRect.top * viewport.height * scaleY
+                            const pixelWidth = transformedRect.width * viewport.width * scaleX
+                            const pixelHeight = transformedRect.height * viewport.height * scaleY
+
+                            return (
+                              <div
+                                key={`annotation-${idx}`}
+                                className="highlight-rect-annotation"
+                                style={{
+                                  left: `${pixelLeft}px`,
+                                  top: `${pixelTop}px`,
+                                  width: `${pixelWidth}px`,
+                                  height: `${pixelHeight}px`,
+                                }}
+                              >
+                                <button
+                                  className="annotation-delete-btn"
+                                  onClick={() => deleteAnnotation(pageNum, idx)}
+                                  title="Delete this annotation"
+                                >
+                                  ×
+                                </button>
+                              </div>
+                            )
+                          })
+                        })()}
                       </div>
+
+                      {/* Interactive drawing overlay - only when drawing mode active */}
+                      {drawingMode && (
+                        <div
+                          className="drawing-overlay"
+                          onMouseDown={(e) => handleDrawStart(e, pageNum)}
+                          onMouseMove={(e) => handleDrawMove(e, pageNum)}
+                          onMouseUp={(e) => handleDrawEnd(e, pageNum)}
+                          onMouseLeave={(e) => handleDrawEnd(e, pageNum)}
+                        >
+                          {drawingRect && (
+                            <div
+                              className="highlight-rect-drawing"
+                              style={{
+                                left: `${drawingRect.left}px`,
+                                top: `${drawingRect.top}px`,
+                                width: `${drawingRect.width}px`,
+                                height: `${drawingRect.height}px`,
+                              }}
+                            />
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
