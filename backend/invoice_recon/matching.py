@@ -44,12 +44,49 @@ def normalize_person_name(person: Dict) -> Tuple[str, str, str]:
     return (full_name, first_name, last_name)
 
 
+def parse_first_name_variants(first_name: Optional[str]) -> List[str]:
+    """
+    Parse first name into variants, extracting parenthetical nicknames.
+
+    Handles names like "Chun Ping (Becca)" where the parenthetical is an
+    English/alternate name that should match with equal confidence.
+
+    Examples:
+        "Chun Ping (Becca)" → ["Chun Ping", "Becca"]
+        "Xiaoling (Camille)" → ["Xiaoling", "Camille"]
+        "John" → ["John"]
+        None → []
+    """
+    if not first_name:
+        return []
+
+    # Extract parenthetical content
+    paren_match = re.search(r'\(([^)]+)\)', first_name)
+    if not paren_match:
+        return [first_name.strip()]
+
+    nickname = paren_match.group(1).strip()
+    # Base name is everything except the parenthetical part
+    base_name = re.sub(r'\s*\([^)]+\)\s*', ' ', first_name).strip()
+
+    variants = []
+    if base_name:
+        variants.append(base_name)
+    if nickname:
+        variants.append(nickname)
+
+    return variants if variants else [first_name.strip()]
+
+
 def find_word_boxes_for_terms(
     page: PageRecord,
     search_terms: List[str],
 ) -> List[Dict[str, float]]:
     """
     Find word bounding boxes for search terms in a page.
+
+    Supports both single-word and multi-word terms. Multi-word terms
+    are matched by finding consecutive word box sequences.
 
     Args:
         page: Page with word boxes (from Textract)
@@ -61,21 +98,31 @@ def find_word_boxes_for_terms(
     if not page.words or not search_terms:
         return []
 
-    # Normalize search terms for matching
-    normalized_terms = [normalize_name(term) for term in search_terms]
+    words = page.words
+
+    # Separate single-word and multi-word terms
+    single_terms = []  # (normalized, original)
+    multi_terms = []   # (tokens_list, original)
+    for term in search_terms:
+        norm = normalize_name(term)
+        if not norm:
+            continue
+        tokens = norm.split()
+        if len(tokens) == 1:
+            single_terms.append((norm, term))
+        else:
+            multi_terms.append((tokens, term))
 
     matched_boxes = []
-    for word_obj in page.words:
+
+    # Single-word matching (original logic)
+    for word_obj in words:
         word_text = word_obj.get("text", "")
         word_normalized = normalize_name(word_text)
 
-        # Check if this word matches any search term
-        for term in normalized_terms:
-            if not term:
-                continue
-
+        for term_norm, term_orig in single_terms:
             # Exact match after normalization
-            if word_normalized == term:
+            if word_normalized == term_norm:
                 matched_boxes.append({
                     "left": word_obj.get("left", 0),
                     "top": word_obj.get("top", 0),
@@ -84,15 +131,13 @@ def find_word_boxes_for_terms(
                 })
                 break
 
-            # For amounts: allow flexible matching with punctuation removed, but exact only
-            # Only match if the term contains digits (likely an amount)
-            if re.search(r'\d', term):
+            # For amounts: allow flexible matching with punctuation removed
+            if re.search(r'\d', term_norm):
                 word_alphanum = re.sub(r'[^\w]', '', word_text.lower())
-                term_alphanum = re.sub(r'[^\w]', '', term.lower())
+                term_alphanum = re.sub(r'[^\w]', '', term_orig.lower())
 
-                # Exact match only (e.g., "$12.34" matches "1234" but not "234")
                 if word_alphanum and term_alphanum and word_alphanum == term_alphanum:
-                    logger.debug(f"Amount match: word='{word_text}' ({word_alphanum}) matches term='{term}' ({term_alphanum})")
+                    logger.debug(f"Amount match: word='{word_text}' ({word_alphanum}) matches term='{term_orig}' ({term_alphanum})")
                     matched_boxes.append({
                         "left": word_obj.get("left", 0),
                         "top": word_obj.get("top", 0),
@@ -100,6 +145,29 @@ def find_word_boxes_for_terms(
                         "height": word_obj.get("height", 0),
                     })
                     break
+
+    # Multi-word matching: find consecutive word sequences
+    for tokens, _ in multi_terms:
+        n = len(tokens)
+        for i in range(len(words) - n + 1):
+            match = True
+            for j in range(n):
+                if normalize_name(words[i + j].get("text", "")) != tokens[j]:
+                    match = False
+                    break
+            if match:
+                span = words[i:i + n]
+                left = min(w.get("left", 0) for w in span)
+                top = min(w.get("top", 0) for w in span)
+                right = max(w.get("left", 0) + w.get("width", 0) for w in span)
+                bottom = max(w.get("top", 0) + w.get("height", 0) for w in span)
+                matched_boxes.append({
+                    "left": left,
+                    "top": top,
+                    "width": right - left,
+                    "height": bottom - top,
+                })
+                break  # First match per multi-word term
 
     return matched_boxes
 
@@ -111,15 +179,16 @@ def find_all_word_boxes_for_term(
     """
     Find ALL word boxes matching a term (returns all occurrences).
 
-    Similar to find_word_boxes_for_terms but returns all occurrences
-    of a single term rather than stopping at first match.
+    Supports both single-word and multi-word terms. Multi-word terms
+    are matched by finding consecutive word box sequences.
 
     Args:
         page: Page with word boxes
         term: Search term (will be normalized)
 
     Returns:
-        List of all bounding boxes matching the term
+        List of all bounding boxes matching the term.
+        For multi-word matches, returns a merged bounding box spanning all words.
     """
     if not page.words or not term:
         return []
@@ -128,18 +197,45 @@ def find_all_word_boxes_for_term(
     if not term_normalized:
         return []
 
-    matched_boxes = []
-    for word_obj in page.words:
-        word_text = word_obj.get("text", "")
-        word_normalized = normalize_name(word_text)
+    term_tokens = term_normalized.split()
+    words = page.words
 
-        # Exact match after normalization
-        if word_normalized == term_normalized:
+    # Single-word term: simple per-word matching
+    if len(term_tokens) == 1:
+        matched_boxes = []
+        for word_obj in words:
+            word_normalized = normalize_name(word_obj.get("text", ""))
+            if word_normalized == term_tokens[0]:
+                matched_boxes.append({
+                    "left": word_obj.get("left", 0),
+                    "top": word_obj.get("top", 0),
+                    "width": word_obj.get("width", 0),
+                    "height": word_obj.get("height", 0),
+                })
+        return matched_boxes
+
+    # Multi-word term: find consecutive word sequences
+    matched_boxes = []
+    n = len(term_tokens)
+    for i in range(len(words) - n + 1):
+        match = True
+        for j in range(n):
+            word_normalized = normalize_name(words[i + j].get("text", ""))
+            if word_normalized != term_tokens[j]:
+                match = False
+                break
+        if match:
+            # Merge bounding boxes of all matched words
+            span = words[i:i + n]
+            left = min(w.get("left", 0) for w in span)
+            top = min(w.get("top", 0) for w in span)
+            right = max(w.get("left", 0) + w.get("width", 0) for w in span)
+            bottom = max(w.get("top", 0) + w.get("height", 0) for w in span)
             matched_boxes.append({
-                "left": word_obj.get("left", 0),
-                "top": word_obj.get("top", 0),
-                "width": word_obj.get("width", 0),
-                "height": word_obj.get("height", 0),
+                "left": left,
+                "top": top,
+                "width": right - left,
+                "height": bottom - top,
             })
 
     return matched_boxes
@@ -272,13 +368,17 @@ def get_search_terms_for_line_item(line_item: LineItem) -> List[str]:
     """
     terms = []
 
-    # Add employee names if present
+    # Add employee names if present, using parsed variants for parenthetical nicknames
     if line_item.employee_first_name:
-        terms.append(line_item.employee_first_name)
+        first_variants = parse_first_name_variants(line_item.employee_first_name)
+        for variant in first_variants:
+            terms.append(variant)
     if line_item.employee_last_name:
         terms.append(line_item.employee_last_name)
     if line_item.employee_first_name and line_item.employee_last_name:
-        terms.append(f"{line_item.employee_first_name} {line_item.employee_last_name}")
+        first_variants = parse_first_name_variants(line_item.employee_first_name)
+        for variant in first_variants:
+            terms.append(f"{variant} {line_item.employee_last_name}")
 
     # Add amount if present - multiple formatting variations
     if line_item.amount:
@@ -328,10 +428,13 @@ def score_page_for_employee(
     score = 0.0
     rationale = []
 
-    # Normalize line item names
-    li_first = normalize_name(line_item.employee_first_name)
+    # Parse first name variants (handles parenthetical nicknames like "Chun Ping (Becca)")
+    # Each variant is treated with equal confidence
+    first_name_variants = parse_first_name_variants(line_item.employee_first_name)
+    first_variants_norm = [normalize_name(v) for v in first_name_variants]
+    first_variants_norm = [v for v in first_variants_norm if v]
+
     li_last = normalize_name(line_item.employee_last_name)
-    li_full = f"{li_first} {li_last}".strip()
 
     if not li_last:
         # Can't match without last name
@@ -358,62 +461,71 @@ def score_page_for_employee(
                 rationale.append(f"Last name match: {li_last}")
                 matched_person = True
 
-        # First name matching - track best match to avoid double-counting
-        if li_first and p_first and matched_person:
-            first_score = 0.0
-            first_rationale = None
+        # First name matching - try all variants, track best match
+        if first_variants_norm and p_first and matched_person:
+            for li_first_v in first_variants_norm:
+                first_score = 0.0
+                first_rationale = None
 
-            # Exact match (highest priority)
-            if li_first == p_first:
-                first_score = 0.30
-                first_rationale = f"First name match: {li_first}"
-            else:
-                # Fuzzy match for nicknames (Bob/Robert, Maggie/Margaret)
-                first_ratio = fuzz.ratio(li_first, p_first)
-                if first_ratio >= 80:
-                    first_score = 0.20
-                    first_rationale = f"First name fuzzy match: {li_first} ~ {p_first} ({first_ratio}%)"
-                # Initial match (fallback, only if no fuzzy match)
-                elif li_first[0] == p_first[0]:
-                    first_score = 0.15
-                    first_rationale = f"First initial match: {li_first[0]}"
+                # Exact match (highest priority)
+                if li_first_v == p_first:
+                    first_score = 0.30
+                    first_rationale = f"First name match: {li_first_v}"
+                else:
+                    # Fuzzy match for nicknames (Bob/Robert, Maggie/Margaret)
+                    first_ratio = fuzz.ratio(li_first_v, p_first)
+                    if first_ratio >= 80:
+                        first_score = 0.20
+                        first_rationale = f"First name fuzzy match: {li_first_v} ~ {p_first} ({first_ratio}%)"
+                    # Initial match (fallback, only if no fuzzy match)
+                    elif li_first_v[0] == p_first[0]:
+                        first_score = 0.15
+                        first_rationale = f"First initial match: {li_first_v[0]}"
 
-            # Keep best first name match
-            if first_score > best_first_name_score:
-                best_first_name_score = first_score
-                best_first_name_rationale = first_rationale
+                # Keep best first name match across all variants and persons
+                if first_score > best_first_name_score:
+                    best_first_name_score = first_score
+                    best_first_name_rationale = first_rationale
 
-        # Fuzzy full name match (only if BOTH first and last names have some similarity)
-        # This prevents false positives from shared surnames
-        if li_full and p_full and matched_person and best_first_name_score > 0:
-            ratio = fuzz.token_sort_ratio(li_full, p_full)
-            if ratio >= 90:
-                score += 0.10
-                rationale.append(f"Full name fuzzy match: {ratio}%")
+        # Fuzzy full name match - try all variants
+        # Only if BOTH first and last names have some similarity
+        if p_full and matched_person and best_first_name_score > 0:
+            for li_first_v in first_variants_norm:
+                li_full_v = f"{li_first_v} {li_last}".strip()
+                if li_full_v:
+                    ratio = fuzz.token_sort_ratio(li_full_v, p_full)
+                    if ratio >= 90:
+                        score += 0.10
+                        rationale.append(f"Full name fuzzy match: {ratio}%")
+                        break
 
     # Add best first name match
     if best_first_name_rationale:
         score += best_first_name_score
         rationale.append(best_first_name_rationale)
 
-    # Calculate proximity modifier if we have both names and word geometry
-    if li_first and li_last and page.words and matched_person:
-        name_pairs = find_name_pairs_with_proximity(page, li_first, li_last)
+    # Calculate proximity modifier - try all first name variants
+    if first_variants_norm and li_last and page.words and matched_person:
+        best_prox_score = -1.0
+        for li_first_v in first_variants_norm:
+            name_pairs = find_name_pairs_with_proximity(page, li_first_v, li_last)
+            if name_pairs:
+                _, _, prox = name_pairs[0]
+                if prox > best_prox_score:
+                    best_prox_score = prox
 
-        if name_pairs:
-            # Use best (closest) pair
-            first_box, last_box, proximity_score = name_pairs[0]
-            proximity_modifier = calculate_proximity_modifier(proximity_score)
+        if best_prox_score >= 0:
+            proximity_modifier = calculate_proximity_modifier(best_prox_score)
 
             # Build rationale message
-            if proximity_score >= 0.7:
-                proximity_rationale = f"Name proximity: very close (score={proximity_score:.2f}, bonus={proximity_modifier:+.2f})"
-            elif proximity_score >= 0.4:
-                proximity_rationale = f"Name proximity: moderate (score={proximity_score:.2f}, bonus={proximity_modifier:+.2f})"
-            elif proximity_score >= 0.2:
-                proximity_rationale = f"Name proximity: weak (score={proximity_score:.2f}, neutral)"
+            if best_prox_score >= 0.7:
+                proximity_rationale = f"Name proximity: very close (score={best_prox_score:.2f}, bonus={proximity_modifier:+.2f})"
+            elif best_prox_score >= 0.4:
+                proximity_rationale = f"Name proximity: moderate (score={best_prox_score:.2f}, bonus={proximity_modifier:+.2f})"
+            elif best_prox_score >= 0.2:
+                proximity_rationale = f"Name proximity: weak (score={best_prox_score:.2f}, neutral)"
             else:
-                proximity_rationale = f"Name proximity: distant (score={proximity_score:.2f}, penalty={proximity_modifier:+.2f})"
+                proximity_rationale = f"Name proximity: distant (score={best_prox_score:.2f}, penalty={proximity_modifier:+.2f})"
 
     # Apply proximity modifier
     if proximity_modifier != 0.0:
@@ -887,8 +999,12 @@ def generate_candidates_for_line_item(
     # Build candidate sets
     candidates = []
 
-    # For non-employee items with amounts, try amount-based matching FIRST
-    if not is_employee and line_item.amount:
+    # Try amount-based matching for non-employee items, or employee items
+    # without names (e.g., Fringe totals that aren't tied to a specific person)
+    use_amount_matching = line_item.amount and (
+        not is_employee or not line_item.employee_last_name
+    )
+    if use_amount_matching:
         amount_candidates = generate_amount_based_candidates(line_item, pages)
 
         # If we found high-quality amount matches (score >= 0.80), prioritize them

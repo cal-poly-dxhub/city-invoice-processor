@@ -62,9 +62,6 @@ class Config:
         if cls.TEXTRACT_MODE not in ("auto", "always", "never"):
             raise ValueError(f"Invalid TEXTRACT_MODE: {cls.TEXTRACT_MODE}")
 
-        if cls.AWS_REGION != "us-west-2":
-            raise ValueError(f"AWS_REGION must be us-west-2, got: {cls.AWS_REGION}")
-
     @classmethod
     def get_job_dir(cls, job_id: str) -> Path:
         """Get the job directory path."""
@@ -76,5 +73,6 @@ class Config:
         return cls.get_job_dir(job_id) / "artifacts"
 
 
-# Validate configuration on import
-Config.validate()
+# Validate configuration on import (skip in Lambda — env vars set by CDK)
+if not os.getenv("AWS_LAMBDA_FUNCTION_NAME"):
+    Config.validate()
