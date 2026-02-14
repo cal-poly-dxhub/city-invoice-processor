@@ -309,7 +309,7 @@ def _associate_amounts_with_budget_items(
 
     Args:
         entities: Entities dict (modified in-place)
-        page_tables: List of table structures from Textract
+        page_tables: List of table structures from Textract (may be dicts if deserialized from JSON)
         page_doc_id: Document ID for default budget item
     """
     amounts = entities.get("amounts", [])
@@ -323,6 +323,13 @@ def _associate_amounts_with_budget_items(
             amount_obj["source"] = "page_default"
         logger.debug(f"No tables found, all {len(amounts)} amounts inherit page default: {page_doc_id}")
         return
+
+    # Rehydrate dicts to Pydantic models (tables may arrive as plain dicts
+    # when deserialized from JSON in the Lambda pipeline).
+    page_tables = [
+        TableStructure.model_validate(t) if isinstance(t, dict) else t
+        for t in page_tables
+    ]
 
     # Build row -> budget_item mapping for all tables
     table_row_budgets = {}  # {table_id: {row_index: budget_item}}
