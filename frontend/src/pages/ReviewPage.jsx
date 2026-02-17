@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams } from "react-router-dom";
 import { API_BASE, DATA_BASE } from "../config";
 import LineItemCard from "../components/LineItemCard";
@@ -7,6 +7,7 @@ import FilterBar from "../components/FilterBar";
 import "./ReviewPage.css";
 
 const POLL_INTERVAL_MS = 5000;
+const SAVE_DEBOUNCE_MS = 1000;
 
 function ReviewPage() {
   const { jobId } = useParams();
@@ -25,9 +26,18 @@ function ReviewPage() {
   const [showSummary, setShowSummary] = useState(false);
   const [minConfidenceScore, setMinConfidenceScore] = useState(0.5);
 
+  // User edits state (lifted from PDFViewer for persistence)
+  const [userEditedCandidates, setUserEditedCandidates] = useState({});
+  const [userAnnotations, setUserAnnotations] = useState({});
+  const editsLoadedRef = useRef(false);
+  const saveTimerRef = useRef(null);
+
   useEffect(() => {
     checkJobAndLoad();
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    };
   }, [jobId]);
 
   const checkJobStatus = async () => {
@@ -96,6 +106,10 @@ function ReviewPage() {
       const json = await response.json();
       setData(json);
       setJobStatus("SUCCEEDED");
+
+      // Load saved user edits
+      await loadUserEdits();
+
       setLoading(false);
       return true;
     } catch {
@@ -103,6 +117,47 @@ function ReviewPage() {
       return false;
     }
   };
+
+  const loadUserEdits = async () => {
+    try {
+      const resp = await fetch(`${API_BASE}/api/jobs/${jobId}/edits`);
+      if (!resp.ok) return;
+      const edits = await resp.json();
+      if (edits.edited_candidates) setUserEditedCandidates(edits.edited_candidates);
+      if (edits.annotations) setUserAnnotations(edits.annotations);
+    } catch {
+      // Edits not available — start fresh
+    } finally {
+      editsLoadedRef.current = true;
+    }
+  };
+
+  const saveUserEdits = useCallback((candidates, annotations) => {
+    if (!editsLoadedRef.current) return;
+    const isEmpty = Object.keys(candidates).length === 0 && Object.keys(annotations).length === 0;
+    if (isEmpty) return;
+
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(async () => {
+      try {
+        await fetch(`${API_BASE}/api/jobs/${jobId}/edits`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            edited_candidates: candidates,
+            annotations: annotations,
+          }),
+        });
+      } catch {
+        // Silent fail — edits will be retried on next change
+      }
+    }, SAVE_DEBOUNCE_MS);
+  }, [jobId]);
+
+  // Auto-save when edits change
+  useEffect(() => {
+    saveUserEdits(userEditedCandidates, userAnnotations);
+  }, [userEditedCandidates, userAnnotations, saveUserEdits]);
 
   const markGroupDone = (rowId) => {
     const isCurrentlyCompleted = completedItems.has(rowId);
@@ -395,6 +450,10 @@ function ReviewPage() {
               onMarkGroupDone={markGroupDone}
               isCompleted={completedItems.has(selectedItem.row_id)}
               jobId={jobId}
+              userEditedCandidates={userEditedCandidates}
+              setUserEditedCandidates={setUserEditedCandidates}
+              userAnnotations={userAnnotations}
+              setUserAnnotations={setUserAnnotations}
             />
           ) : (
             <div className="empty-state">

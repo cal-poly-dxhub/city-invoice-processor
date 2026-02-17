@@ -23,6 +23,7 @@ const slugify = (text) =>
 
 function UploadPage() {
   const navigate = useNavigate()
+  const [jobName, setJobName] = useState('')
   const [csvFile, setCsvFile] = useState(null)
   const [pdfFiles, setPdfFiles] = useState({}) // { budgetItem: File[] }
   const [uploading, setUploading] = useState(false)
@@ -145,7 +146,11 @@ function UploadPage() {
       const startResp = await fetch(`${API_BASE}/api/upload/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pdf_files: pdfFilesPayload }),
+        body: JSON.stringify({
+          pdf_files: pdfFilesPayload,
+          job_name: jobName.trim() || undefined,
+          csv_filename: csvFile?.name || '',
+        }),
       })
 
       if (!startResp.ok) throw new Error(`Failed to get upload URLs: ${startResp.status}`)
@@ -247,6 +252,17 @@ function UploadPage() {
       </div>
 
       <main className="upload-main-content">
+        <div className="job-name-inline">
+          <input
+            type="text"
+            value={jobName}
+            onChange={(e) => setJobName(e.target.value)}
+            placeholder="Job Name (Optional)"
+            className="job-name-text-input"
+            disabled={uploading}
+          />
+        </div>
+
         <section className="upload-section">
           <div className="section-header">
             <h2>Invoice CSV File</h2>

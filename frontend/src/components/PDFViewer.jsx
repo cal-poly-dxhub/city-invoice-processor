@@ -23,7 +23,7 @@ const LEGACY_FILENAME_MAP = {
   'Indirect Costs': 'Indirect_Costs.pdf',
 }
 
-function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted, jobId }) {
+function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted, jobId, userEditedCandidates, setUserEditedCandidates, userAnnotations, setUserAnnotations }) {
   const [pdfsReady, setPdfsReady] = useState(false) // True when all source PDFs are loaded
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -35,10 +35,8 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted, j
   const [searchPageIdx, setSearchPageIdx] = useState(0) // Track current page index in search results
   const [pageRotations, setPageRotations] = useState({}) // Track user-applied rotation per page (0, 90, 180, 270)
   const [viewportDimensions, setViewportDimensions] = useState({}) // Store viewport dimensions for each page
-  const [userEditedCandidates, setUserEditedCandidates] = useState({}) // Track user modifications: { [candidateKey]: { ...candidate, page_numbers: [...], edited: true } }
   const [searchQuery, setSearchQuery] = useState('') // User's search query
   const [searchResults, setSearchResults] = useState({}) // Search results: { page_number: [boxes] }
-  const [userAnnotations, setUserAnnotations] = useState({}) // User-drawn highlights: { [candidateKey]: { [pageNum]: [ {left, top, width, height} ] } }
   const [drawingMode, setDrawingMode] = useState(false) // Whether drawing mode is active
   const [drawingRect, setDrawingRect] = useState(null) // Pixel coords of in-progress rubber-band rect
   const pageInherentRotations = useRef({}) // Track PDF's inherent rotation

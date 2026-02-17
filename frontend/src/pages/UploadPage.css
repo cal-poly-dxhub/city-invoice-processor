@@ -383,6 +383,38 @@
   letter-spacing: 0.03em;
 }
 
+/* Job Name Inline */
+.job-name-inline {
+  max-width: 400px;
+  margin-bottom: 3rem;
+}
+
+.job-name-text-input {
+  width: 100%;
+  padding: 0.25rem 0;
+  font-family: var(--font-serif);
+  font-size: 1.125rem;
+  border: none;
+  border-bottom: 2px solid var(--color-border);
+  background: transparent;
+  color: var(--color-text);
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.job-name-text-input:focus {
+  border-bottom-color: var(--color-accent);
+}
+
+.job-name-text-input::placeholder {
+  color: var(--color-text-secondary);
+  opacity: 0.5;
+}
+
+.job-name-text-input:disabled {
+  opacity: 0.5;
+}
+
 /* PDF Grid */
 .pdf-grid {
   display: grid;

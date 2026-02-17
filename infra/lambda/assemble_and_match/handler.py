@@ -5,7 +5,9 @@ import logging
 import os
 import sys
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
+
+import boto3
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "backend"))
 
@@ -33,6 +35,10 @@ logger.setLevel(logging.INFO)
 
 # Minimum candidate score (same as Config.MIN_CANDIDATE_SCORE default)
 MIN_CANDIDATE_SCORE = float(os.environ.get("MIN_CANDIDATE_SCORE", "0.1"))
+
+# DynamoDB for job status updates
+_dynamodb = boto3.resource("dynamodb")
+_cache_table = _dynamodb.Table(os.environ["CACHE_TABLE"])
 
 
 def lambda_handler(event, context):
@@ -249,6 +255,18 @@ def lambda_handler(event, context):
     upload_json(reconciliation, output_key)
 
     logger.info(f"AssembleAndMatch: wrote {output_key}")
+
+    # Mark job as succeeded in DynamoDB
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        _cache_table.update_item(
+            Key={"PK": "JOBS", "SK": job_id},
+            UpdateExpression="SET #s = :status, updated_at = :now",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={":status": "SUCCEEDED", ":now": now},
+        )
+    except Exception as e:
+        logger.warning(f"Failed to update job status: {e}")
 
     return {
         "job_id": job_id,

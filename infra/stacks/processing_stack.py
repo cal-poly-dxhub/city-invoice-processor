@@ -106,6 +106,7 @@ class ProcessingStack(Stack):
             log_retention=logs.RetentionDays.TWO_WEEKS,
         )
         data_bucket.grant_read_write(parse_csv_fn)
+        cache_table.grant_write_data(parse_csv_fn)
 
         # --- DiscoverPDFs Lambda ---
         discover_pdfs_fn = _lambda.Function(
@@ -214,7 +215,7 @@ class ProcessingStack(Stack):
             log_retention=logs.RetentionDays.TWO_WEEKS,
         )
         data_bucket.grant_read_write(assemble_fn)
-        cache_table.grant_read_data(assemble_fn)
+        cache_table.grant_read_write_data(assemble_fn)
 
         # --- Step Functions State Machine ---
         # State 1: ParseCSV
@@ -362,10 +363,12 @@ class ProcessingStack(Stack):
             code=_lambda.Code.from_inline(self._upload_start_code()),
             environment={
                 "DATA_BUCKET": data_bucket.bucket_name,
+                "CACHE_TABLE": cache_table.table_name,
             },
             timeout=Duration.seconds(10),
         )
         data_bucket.grant_put(upload_start_fn)
+        cache_table.grant_write_data(upload_start_fn)
 
         api_resource = api.root.add_resource("api")
 
@@ -396,6 +399,68 @@ class ProcessingStack(Stack):
             apigw.LambdaIntegration(job_status_fn),
         )
 
+        # GET /api/jobs — list all jobs
+        list_jobs_fn = _lambda.Function(
+            self,
+            "ListJobsFn",
+            runtime=_lambda.Runtime.PYTHON_3_13,
+            handler="index.handler",
+            code=_lambda.Code.from_inline(self._list_jobs_code()),
+            environment={
+                "CACHE_TABLE": cache_table.table_name,
+            },
+            timeout=Duration.seconds(10),
+        )
+        cache_table.grant_read_data(list_jobs_fn)
+        api_jobs.add_method("GET", apigw.LambdaIntegration(list_jobs_fn))
+
+        # PATCH /api/jobs/{jobId} — rename a job
+        update_job_fn = _lambda.Function(
+            self,
+            "UpdateJobFn",
+            runtime=_lambda.Runtime.PYTHON_3_13,
+            handler="index.handler",
+            code=_lambda.Code.from_inline(self._update_job_code()),
+            environment={
+                "CACHE_TABLE": cache_table.table_name,
+            },
+            timeout=Duration.seconds(10),
+        )
+        cache_table.grant_read_write_data(update_job_fn)
+        api_job.add_method("PATCH", apigw.LambdaIntegration(update_job_fn))
+
+        # PUT /api/jobs/{jobId}/edits — save user edits to S3
+        save_edits_fn = _lambda.Function(
+            self,
+            "SaveEditsFn",
+            runtime=_lambda.Runtime.PYTHON_3_13,
+            handler="index.handler",
+            code=_lambda.Code.from_inline(self._save_edits_code()),
+            environment={
+                "DATA_BUCKET": data_bucket.bucket_name,
+            },
+            timeout=Duration.seconds(10),
+        )
+        data_bucket.grant_put(save_edits_fn)
+
+        # GET /api/jobs/{jobId}/edits — load user edits from S3
+        load_edits_fn = _lambda.Function(
+            self,
+            "LoadEditsFn",
+            runtime=_lambda.Runtime.PYTHON_3_13,
+            handler="index.handler",
+            code=_lambda.Code.from_inline(self._load_edits_code()),
+            environment={
+                "DATA_BUCKET": data_bucket.bucket_name,
+            },
+            timeout=Duration.seconds(10),
+        )
+        data_bucket.grant_read(load_edits_fn)
+
+        api_edits = api_job.add_resource("edits")
+        api_edits.add_method("PUT", apigw.LambdaIntegration(save_edits_fn))
+        api_edits.add_method("GET", apigw.LambdaIntegration(load_edits_fn))
+
         self.api_url = api.url
 
     @staticmethod
@@ -404,7 +469,10 @@ class ProcessingStack(Stack):
         return """
 import json
 import os
+import time
 import uuid
+from datetime import datetime, timezone
+
 import boto3
 from botocore.config import Config
 
@@ -416,6 +484,9 @@ s3 = boto3.client(
     config=Config(signature_version="s3v4"),
 )
 BUCKET = os.environ["DATA_BUCKET"]
+
+dynamodb = boto3.resource("dynamodb")
+table = dynamodb.Table(os.environ["CACHE_TABLE"])
 
 def handler(event, context):
     body = json.loads(event.get("body", "{}"))
@@ -429,6 +500,27 @@ def handler(event, context):
 
     job_id = str(uuid.uuid4())
     prefix = f"uploads/{job_id}"
+
+    # Job metadata from request
+    job_name = (body.get("job_name") or "").strip() or "Untitled Job"
+    csv_filename = body.get("csv_filename", "")
+    pdf_count = sum(len(paths) for paths in pdf_files.values())
+    budget_items_list = list(pdf_files.keys())
+
+    # Write job record to DynamoDB
+    now = datetime.now(timezone.utc).isoformat()
+    table.put_item(Item={
+        "PK": "JOBS",
+        "SK": job_id,
+        "job_name": job_name,
+        "status": "UPLOADING",
+        "created_at": now,
+        "updated_at": now,
+        "csv_filename": csv_filename,
+        "pdf_count": pdf_count,
+        "budget_items": budget_items_list,
+        "ttl": int(time.time()) + 365 * 86400,
+    })
 
     urls = {}
 
@@ -457,7 +549,11 @@ def handler(event, context):
             "Content-Type": "application/json",
             "Access-Control-Allow-Origin": "*",
         },
-        "body": json.dumps({"job_id": job_id, "presigned_urls": urls}),
+        "body": json.dumps({
+            "job_id": job_id,
+            "job_name": job_name,
+            "presigned_urls": urls,
+        }),
     }
 """
 
@@ -502,5 +598,184 @@ def handler(event, context):
             "Access-Control-Allow-Origin": "*",
         },
         "body": json.dumps({"job_id": job_id, "status": status}),
+    }
+"""
+
+    @staticmethod
+    def _list_jobs_code() -> str:
+        """Inline code for list jobs Lambda."""
+        return """
+import json
+import os
+from decimal import Decimal
+
+import boto3
+from boto3.dynamodb.conditions import Key
+
+dynamodb = boto3.resource("dynamodb")
+table = dynamodb.Table(os.environ["CACHE_TABLE"])
+
+class DecimalEncoder(json.JSONEncoder):
+    def default(self, o):
+        if isinstance(o, Decimal):
+            return int(o) if o == int(o) else float(o)
+        return super().default(o)
+
+def handler(event, context):
+    resp = table.query(
+        KeyConditionExpression=Key("PK").eq("JOBS"),
+    )
+
+    jobs = []
+    for item in resp.get("Items", []):
+        jobs.append({
+            "job_id": item["SK"],
+            "job_name": item.get("job_name", "Untitled Job"),
+            "status": item.get("status", "UNKNOWN"),
+            "created_at": item.get("created_at", ""),
+            "updated_at": item.get("updated_at", ""),
+            "csv_filename": item.get("csv_filename", ""),
+            "pdf_count": item.get("pdf_count", 0),
+            "budget_items": item.get("budget_items", []),
+        })
+
+    # Newest first
+    jobs.sort(key=lambda j: j["created_at"], reverse=True)
+
+    return {
+        "statusCode": 200,
+        "headers": {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+        },
+        "body": json.dumps({"jobs": jobs}, cls=DecimalEncoder),
+    }
+"""
+
+    @staticmethod
+    def _update_job_code() -> str:
+        """Inline code for update job Lambda."""
+        return """
+import json
+import os
+from datetime import datetime, timezone
+
+import boto3
+
+dynamodb = boto3.resource("dynamodb")
+table = dynamodb.Table(os.environ["CACHE_TABLE"])
+
+def handler(event, context):
+    job_id = event["pathParameters"]["jobId"]
+    body = json.loads(event.get("body", "{}"))
+
+    job_name = (body.get("job_name") or "").strip()
+    if not job_name:
+        return {
+            "statusCode": 400,
+            "headers": {
+                "Content-Type": "application/json",
+                "Access-Control-Allow-Origin": "*",
+            },
+            "body": json.dumps({"error": "job_name is required and cannot be empty"}),
+        }
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    try:
+        table.update_item(
+            Key={"PK": "JOBS", "SK": job_id},
+            UpdateExpression="SET job_name = :name, updated_at = :now",
+            ExpressionAttributeValues={":name": job_name, ":now": now},
+            ConditionExpression="attribute_exists(PK)",
+        )
+    except dynamodb.meta.client.exceptions.ConditionalCheckFailedException:
+        return {
+            "statusCode": 404,
+            "headers": {
+                "Content-Type": "application/json",
+                "Access-Control-Allow-Origin": "*",
+            },
+            "body": json.dumps({"error": "Job not found"}),
+        }
+
+    return {
+        "statusCode": 200,
+        "headers": {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+        },
+        "body": json.dumps({"job_id": job_id, "job_name": job_name}),
+    }
+"""
+
+    @staticmethod
+    def _save_edits_code() -> str:
+        """Inline code for save user edits Lambda."""
+        return """
+import json
+import os
+
+import boto3
+
+s3 = boto3.client("s3")
+BUCKET = os.environ["DATA_BUCKET"]
+
+def handler(event, context):
+    job_id = event["pathParameters"]["jobId"]
+    body = event.get("body", "{}")
+
+    s3.put_object(
+        Bucket=BUCKET,
+        Key=f"jobs/{job_id}/user_edits.json",
+        Body=body.encode("utf-8"),
+        ContentType="application/json",
+    )
+
+    return {
+        "statusCode": 200,
+        "headers": {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+        },
+        "body": json.dumps({"status": "saved"}),
+    }
+"""
+
+    @staticmethod
+    def _load_edits_code() -> str:
+        """Inline code for load user edits Lambda."""
+        return """
+import json
+import os
+
+import boto3
+from botocore.exceptions import ClientError
+
+s3 = boto3.client("s3")
+BUCKET = os.environ["DATA_BUCKET"]
+
+def handler(event, context):
+    job_id = event["pathParameters"]["jobId"]
+
+    try:
+        resp = s3.get_object(
+            Bucket=BUCKET,
+            Key=f"jobs/{job_id}/user_edits.json",
+        )
+        body = resp["Body"].read().decode("utf-8")
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "NoSuchKey":
+            body = "{}"
+        else:
+            raise
+
+    return {
+        "statusCode": 200,
+        "headers": {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+        },
+        "body": body,
     }
 """

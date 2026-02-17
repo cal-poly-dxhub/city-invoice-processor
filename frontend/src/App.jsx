@@ -1,11 +1,16 @@
 import { Routes, Route, Link, useLocation } from 'react-router-dom'
 import UploadPage from './pages/UploadPage'
 import ReviewPage from './pages/ReviewPage'
+import JobHistoryPage from './pages/JobHistoryPage'
 import './App.css'
 
 function App() {
   const location = useLocation()
-  const isUpload = location.pathname === '/' || location.pathname === ''
+  const path = location.pathname
+
+  const isUpload = path === '/' || path === ''
+  const isJobs = path === '/jobs'
+  const isReview = path.startsWith('/review/')
 
   return (
     <div className="app-root">
@@ -20,10 +25,10 @@ function App() {
               Upload
             </Link>
             <Link
-              to="/review/my_job"
-              className={`nav-link ${!isUpload ? 'active' : ''}`}
+              to="/jobs"
+              className={`nav-link ${isJobs || isReview ? 'active' : ''}`}
             >
-              Review
+              Jobs
             </Link>
           </div>
         </div>
@@ -31,6 +36,7 @@ function App() {
 
       <Routes>
         <Route path="/" element={<UploadPage />} />
+        <Route path="/jobs" element={<JobHistoryPage />} />
         <Route path="/review/:jobId" element={<ReviewPage />} />
       </Routes>
     </div>
