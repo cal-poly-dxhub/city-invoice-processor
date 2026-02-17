@@ -4,6 +4,9 @@ import json
 import logging
 import os
 import sys
+from datetime import datetime, timezone
+
+import boto3
 
 # Add backend to path so invoice_recon modules are importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "backend"))
@@ -15,6 +18,24 @@ from pathlib import Path
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
+
+# DynamoDB for job status updates
+_dynamodb = boto3.resource("dynamodb")
+_cache_table = _dynamodb.Table(os.environ["CACHE_TABLE"])
+
+
+def _update_job_status(job_id: str, status: str) -> None:
+    """Update job status in DynamoDB."""
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        _cache_table.update_item(
+            Key={"PK": "JOBS", "SK": job_id},
+            UpdateExpression="SET #s = :status, updated_at = :now",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={":status": status, ":now": now},
+        )
+    except Exception as e:
+        logger.warning(f"Failed to update job status: {e}")
 
 
 def lambda_handler(event, context):
@@ -33,6 +54,9 @@ def lambda_handler(event, context):
     pdf_prefix = f"uploads/{job_id}/pdf/"
 
     logger.info(f"ParseCSV: job_id={job_id}, csv_key={csv_key}")
+
+    # Mark job as processing
+    _update_job_status(job_id, "PROCESSING")
 
     # Download CSV to /tmp
     local_csv = f"/tmp/{job_id}/invoice.csv"
