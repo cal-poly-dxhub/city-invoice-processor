@@ -44,6 +44,8 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted, j
   const containerRefs = useRef({})
   const drawingStartRef = useRef(null) // { startX, startY } during active drag
   const pdfDocsRef = useRef({}) // Cache of loaded PDF.js documents: { source_doc_id: pdfDoc }
+  const renderTaskRef = useRef(null) // Current PDF.js render task (for cancellation)
+  const renderGenRef = useRef(0) // Generation counter to discard stale retry callbacks
 
   // Get source files for the current document (with backward compat fallback)
   const getSourceFiles = () => {
@@ -137,6 +139,13 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted, j
         renderPages()
       })
     }
+    // Cleanup: cancel any in-progress render when dependencies change or unmount
+    return () => {
+      if (renderTaskRef.current) {
+        renderTaskRef.current.cancel()
+        renderTaskRef.current = null
+      }
+    }
   }, [pdfsReady, pageNumbers, pageRotations, currentPageIdx, viewMode, allPagesCurrentPage, searchPageIdx, searchResults])
 
   // Reset to first page when candidate changes
@@ -178,6 +187,9 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted, j
   const renderPages = async () => {
     if (!pdfsReady) return
 
+    // Increment generation so stale retry callbacks are discarded
+    const generation = ++renderGenRef.current
+
     // Determine which page to render based on view mode
     let pageNum
     if (viewMode === 'group') {
@@ -198,15 +210,18 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted, j
     // Wait for canvas to be properly mounted with dimensions
     if (!canvas || !container) {
       console.log(`PDFViewer: Canvas or container not ready for page ${pageNum}, will retry`)
-      // Retry after a delay to allow React to mount the elements
-      setTimeout(() => renderPages(), 100)
+      setTimeout(() => {
+        if (renderGenRef.current === generation) renderPages()
+      }, 100)
       return
     }
 
     // Additional safety check: ensure canvas is in DOM and has layout
     if (canvas.offsetParent === null) {
       console.log(`PDFViewer: Canvas for page ${pageNum} not yet in layout, will retry`)
-      setTimeout(() => renderPages(), 100)
+      setTimeout(() => {
+        if (renderGenRef.current === generation) renderPages()
+      }, 100)
       return
     }
 
@@ -214,12 +229,20 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted, j
     // On first render, offsetWidth/Height might be 0
     if (canvas.offsetWidth === 0 || canvas.offsetHeight === 0) {
       console.log(`PDFViewer: Canvas for page ${pageNum} has zero dimensions (${canvas.offsetWidth}x${canvas.offsetHeight}), will retry`)
-      // Retry after a short delay to allow layout to complete
-      setTimeout(() => renderPages(), 100)
+      setTimeout(() => {
+        if (renderGenRef.current === generation) renderPages()
+      }, 100)
       return
     }
 
     try {
+      // Cancel any in-progress render before starting a new one
+      // This prevents concurrent renders from corrupting the canvas (mirroring/rotation glitch)
+      if (renderTaskRef.current) {
+        renderTaskRef.current.cancel()
+        renderTaskRef.current = null
+      }
+
       // Resolve virtual page to physical PDF + local page number
       const resolved = resolveVirtualPage(pageNum)
       if (!resolved) {
@@ -233,6 +256,9 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted, j
         return
       }
       const page = await pdfDoc.getPage(localPage)
+
+      // Check if this render has been superseded while we awaited getPage
+      if (renderGenRef.current !== generation) return
 
       // Store the page's inherent rotation in ref
       const inherentRotation = page.rotate || 0
@@ -250,18 +276,13 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted, j
 
       const context = canvas.getContext('2d')
 
-      // Save current transform before any operations
-      context.save()
-
-      // Update canvas dimensions FIRST, before clearing
+      // Update canvas dimensions (this resets the canvas state entirely)
       canvas.width = viewport.width
       canvas.height = viewport.height
 
-      // Clear the canvas with the NEW dimensions
-      context.clearRect(0, 0, canvas.width, canvas.height)
-
-      // Reset any transforms that might persist
+      // Ensure clean transform state before rendering
       context.setTransform(1, 0, 0, 1, 0, 0)
+      context.clearRect(0, 0, canvas.width, canvas.height)
 
       // Store viewport dimensions for this page (for highlight calculations)
       setViewportDimensions(prev => ({
@@ -272,14 +293,19 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted, j
         }
       }))
 
-      // Render PDF content
-      await page.render({
+      // Render PDF content — track the task so we can cancel it if a new render starts
+      const renderTask = page.render({
         canvasContext: context,
         viewport: viewport
-      }).promise
+      })
+      renderTaskRef.current = renderTask
 
-      // Restore context state
-      context.restore()
+      await renderTask.promise
+
+      // Check if this render has been superseded while we awaited the render
+      if (renderGenRef.current !== generation) return
+
+      renderTaskRef.current = null
 
       console.log(`PDFViewer: Successfully rendered page ${pageNum}`)
 
@@ -289,6 +315,11 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted, j
       console.log(`PDFViewer: Setting highlights for page ${pageNum}:`, backendHighlights[pageNum]?.length || 0, 'boxes')
       setHighlights(backendHighlights)
     } catch (err) {
+      // PDF.js throws when a render is cancelled — this is expected, not an error
+      if (err?.name === 'RenderingCancelledException' || err?.message?.includes('Rendering cancelled')) {
+        console.log(`PDFViewer: Render cancelled for page ${pageNum} (superseded by newer render)`)
+        return
+      }
       console.error(`Error rendering page ${pageNum}:`, err)
     }
   }
@@ -610,6 +641,8 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted, j
           edited: true
         }
       })
+      // Clamp page index so it doesn't point past the end of the shortened group
+      setCurrentPageIdx(prev => Math.min(prev, newPageNumbers.length - 1))
     }
   }
 
@@ -764,6 +797,15 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted, j
           {loading && <div className="loading">Loading PDF...</div>}
           {error && <div className="error">Error loading PDF: {error}</div>}
 
+          {doc && doc.pages_data && (
+            <SearchBar
+              key={item.row_id}
+              query={searchQuery}
+              onQueryChange={setSearchQuery}
+              resultSummary={getSearchResultSummary()}
+            />
+          )}
+
           <div className="page-stack">
             {(() => {
               // Determine page number based on view mode
@@ -872,14 +914,6 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted, j
                           {viewMode === 'group' ? 'Group View' : viewMode === 'all' ? 'All Pages' : 'Search Results'}
                         </button>
                       </div>
-
-                      {doc && doc.pages_data && (
-                        <SearchBar
-                          query={searchQuery}
-                          onQueryChange={setSearchQuery}
-                          resultSummary={null}
-                        />
-                      )}
 
                       {selectedCandidate && (
                         <div className="page-edit-controls">
