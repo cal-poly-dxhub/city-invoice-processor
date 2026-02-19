@@ -486,6 +486,8 @@ class ProcessingStack(Stack):
         )
 
         self.api_url = api.url
+        self.api_rest_api_id = api.rest_api_id
+        self.api_stage_name = api.deployment_stage.stage_name
 
     @staticmethod
     def _upload_start_code() -> str:

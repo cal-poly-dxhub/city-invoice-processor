@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { BUDGET_ITEMS } from '../utils/budgetItemClassifier';
 import './UnassignedFilesModal.css';
 
@@ -20,6 +20,14 @@ export default function UnassignedFilesModal({ files, onConfirm, onCancel }) {
 
   const allAssigned = Object.values(assignments).every((v) => v !== '');
 
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') onCancel();
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [onCancel]);
+
   const handleChange = (index, value) => {
     setAssignments((prev) => ({ ...prev, [index]: value }));
   };
@@ -33,18 +41,18 @@ export default function UnassignedFilesModal({ files, onConfirm, onCancel }) {
   };
 
   return (
-    <div className="unassigned-overlay" onClick={onCancel}>
+    <div className="unassigned-overlay" role="dialog" aria-modal="true" aria-labelledby="unassigned-title" onClick={onCancel}>
       <div className="unassigned-modal" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="unassigned-header">
           <div>
-            <h2>Assign Budget Items</h2>
+            <h2 id="unassigned-title">Assign Budget Items</h2>
             <p className="unassigned-subtitle">
               {files.length} file{files.length !== 1 ? 's' : ''} could not be
               classified automatically. Please assign each to a budget item.
             </p>
           </div>
-          <button className="unassigned-close" onClick={onCancel}>
+          <button className="unassigned-close" onClick={onCancel} aria-label="Close">
             &times;
           </button>
         </div>

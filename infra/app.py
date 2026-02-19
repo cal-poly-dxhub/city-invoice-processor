@@ -29,6 +29,8 @@ FrontendStack(
     "InvoiceProcessorFrontend",
     data_bucket=storage.data_bucket,
     api_url=processing.api_url,
+    api_rest_api_id=processing.api_rest_api_id,
+    api_stage_name=processing.api_stage_name,
     env=env,
 )
 

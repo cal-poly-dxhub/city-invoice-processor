@@ -29,6 +29,7 @@ function ReviewPage() {
   // User edits state (lifted from PDFViewer for persistence)
   const [userEditedCandidates, setUserEditedCandidates] = useState({});
   const [userAnnotations, setUserAnnotations] = useState({});
+  const [subItems, setSubItems] = useState({}); // { parentRowId: SubItem[] }
   const editsLoadedRef = useRef(false);
   const saveTimerRef = useRef(null);
 
@@ -125,6 +126,14 @@ function ReviewPage() {
       const edits = await resp.json();
       if (edits.edited_candidates) setUserEditedCandidates(edits.edited_candidates);
       if (edits.annotations) setUserAnnotations(edits.annotations);
+      if (edits.sub_items?.length > 0) {
+        const grouped = {};
+        for (const si of edits.sub_items) {
+          if (!grouped[si.parent_row_id]) grouped[si.parent_row_id] = [];
+          grouped[si.parent_row_id].push(si);
+        }
+        setSubItems(grouped);
+      }
     } catch {
       // Edits not available — start fresh
     } finally {
@@ -132,20 +141,20 @@ function ReviewPage() {
     }
   };
 
-  const saveUserEdits = useCallback((candidates, annotations) => {
+  const saveUserEdits = useCallback((candidates, annotations, subs) => {
     if (!editsLoadedRef.current) return;
-    const isEmpty = Object.keys(candidates).length === 0 && Object.keys(annotations).length === 0;
-    if (isEmpty) return;
 
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(async () => {
       try {
+        const allSubItems = Object.values(subs).flat();
         await fetch(`${API_BASE}/api/jobs/${jobId}/edits`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             edited_candidates: candidates,
             annotations: annotations,
+            sub_items: allSubItems,
           }),
         });
       } catch {
@@ -156,8 +165,66 @@ function ReviewPage() {
 
   // Auto-save when edits change
   useEffect(() => {
-    saveUserEdits(userEditedCandidates, userAnnotations);
-  }, [userEditedCandidates, userAnnotations, saveUserEdits]);
+    saveUserEdits(userEditedCandidates, userAnnotations, subItems);
+  }, [userEditedCandidates, userAnnotations, subItems, saveUserEdits]);
+
+  const addSubItem = useCallback((subItem) => {
+    setSubItems((prev) => {
+      const parentList = prev[subItem.parent_row_id] || [];
+      return { ...prev, [subItem.parent_row_id]: [...parentList, subItem] };
+    });
+  }, []);
+
+  const addSubItems = useCallback((parentRowId, newItems) => {
+    setSubItems((prev) => {
+      const parentList = prev[parentRowId] || [];
+      return { ...prev, [parentRowId]: [...parentList, ...newItems] };
+    });
+  }, []);
+
+  const removeSubItem = useCallback((parentRowId, subItemId) => {
+    setSubItems((prev) => {
+      const parentList = (prev[parentRowId] || []).filter(
+        (si) => si.sub_item_id !== subItemId
+      );
+      const updated = { ...prev, [parentRowId]: parentList };
+      if (parentList.length === 0) delete updated[parentRowId];
+      return updated;
+    });
+  }, []);
+
+  const getNextSubItemSuffix = useCallback(
+    (parentRowId) => {
+      const existing = subItems[parentRowId] || [];
+      return String.fromCharCode(97 + existing.length); // a, b, c, ...
+    },
+    [subItems]
+  );
+
+  // Shape a sub-item to look like a line item for PDFViewer
+  const shapeSubItemAsLineItem = (subItem, parentItem) => ({
+    row_id: subItem.sub_item_id,
+    row_index: parentItem.row_index,
+    budget_item: parentItem.budget_item,
+    raw: {
+      amount: subItem.amount,
+      explanation: subItem.label,
+    },
+    normalized: {
+      budget_item: parentItem.budget_item,
+      amount: subItem.amount,
+      explanation: subItem.keywords?.join(", ") || "",
+    },
+    candidates: subItem.candidates || [],
+    selected_evidence: subItem.selected_evidence || {
+      doc_id: subItem.doc_id,
+      page_numbers: [],
+      selection_source: "auto",
+    },
+    _isSubItem: true,
+    _parentRowId: subItem.parent_row_id,
+    _label: subItem.label,
+  });
 
   const markGroupDone = (rowId) => {
     const isCurrentlyCompleted = completedItems.has(rowId);
@@ -435,6 +502,14 @@ function ReviewPage() {
                   isSelected={selectedItem?.row_id === item.row_id}
                   isCompleted={completedItems.has(item.row_id)}
                   onClick={() => setSelectedItem(item)}
+                  subItems={subItems[item.row_id] || []}
+                  selectedSubItemId={selectedItem?._isSubItem ? selectedItem.row_id : null}
+                  onSubItemClick={(subItem) =>
+                    setSelectedItem(shapeSubItemAsLineItem(subItem, item))
+                  }
+                  onRemoveSubItem={(subItemId) =>
+                    removeSubItem(item.row_id, subItemId)
+                  }
                 />
               ))}
             </div>
@@ -454,6 +529,10 @@ function ReviewPage() {
               setUserEditedCandidates={setUserEditedCandidates}
               userAnnotations={userAnnotations}
               setUserAnnotations={setUserAnnotations}
+              onAddSubItem={addSubItem}
+              onAddSubItems={addSubItems}
+              getNextSubItemSuffix={getNextSubItemSuffix}
+              subItems={subItems[selectedItem?._isSubItem ? selectedItem._parentRowId : selectedItem?.row_id] || []}
             />
           ) : (
             <div className="empty-state">

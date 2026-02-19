@@ -168,11 +168,6 @@
   border-color: var(--color-accent);
 }
 
-.file-input-card.has-file {
-  border-color: var(--color-success);
-  background: rgba(45, 80, 22, 0.02);
-}
-
 .file-count-badge {
   font-family: var(--font-mono);
   font-size: 0.75rem;
@@ -236,9 +231,6 @@
   white-space: nowrap;
 }
 
-.file-input-card:not(.has-file) .file-input-text {
-  color: var(--color-text-secondary);
-}
 
 /* Dropzone */
 .dropzone {

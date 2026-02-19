@@ -200,7 +200,7 @@ function UploadPage() {
     onDrop: processNewFiles,
     accept: { 'application/pdf': ['.pdf'] },
     multiple: true,
-    disabled: uploading,
+    disabled: uploading || !!unassignedFiles,
     noClick: false,
   })
 

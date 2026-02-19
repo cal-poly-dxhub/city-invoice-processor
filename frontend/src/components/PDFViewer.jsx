@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import * as pdfjsLib from 'pdfjs-dist'
 import SearchBar from './SearchBar'
+import CreateSubItemDialog from './CreateSubItemDialog'
 import { DATA_BASE } from '../config'
 import './PDFViewer.css'
 
@@ -23,7 +24,7 @@ const LEGACY_FILENAME_MAP = {
   'Indirect Costs': 'Indirect_Costs.pdf',
 }
 
-function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted, jobId, userEditedCandidates, setUserEditedCandidates, userAnnotations, setUserAnnotations }) {
+function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted, jobId, userEditedCandidates, setUserEditedCandidates, userAnnotations, setUserAnnotations, onAddSubItem, onAddSubItems, getNextSubItemSuffix, subItems = [] }) {
   const [pdfsReady, setPdfsReady] = useState(false) // True when all source PDFs are loaded
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -744,6 +745,25 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted, j
     })
   }
 
+  // Sub-item dialog state
+  const [subItemDialogOpen, setSubItemDialogOpen] = useState(false)
+  const [subItemDialogMode, setSubItemDialogMode] = useState('manual') // 'manual' or 'auto'
+
+  const openAutoExtractDialog = () => {
+    setSubItemDialogMode('auto')
+    setSubItemDialogOpen(true)
+  }
+
+  // Get the current page for the dialog's source_page
+  const getCurrentPageNum = () => {
+    if (viewMode === 'group') return pageNumbers[currentPageIdx] || 1
+    if (viewMode === 'all') return allPagesCurrentPage
+    if (viewMode === 'search') return searchResultPages[searchPageIdx] || 1
+    return 1
+  }
+
+  // Determine the parent row_id (for sub-items, use the parent; otherwise use current)
+  const effectiveParentRowId = item._isSubItem ? item._parentRowId : item.row_id
 
   return (
     <div className="pdf-viewer">
@@ -957,6 +977,16 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted, j
                         </button>
                       )}
 
+                      {onAddSubItems && !item._isSubItem && (
+                        <button
+                          className="auto-extract-btn"
+                          onClick={openAutoExtractDialog}
+                          title="Auto-extract sub-items from table rows on this page"
+                        >
+                          Auto-Extract Sub-Items
+                        </button>
+                      )}
+
                       <button
                         className={`mark-done-btn ${isCompleted ? 'completed' : ''}`}
                         onClick={() => onMarkGroupDone(item.row_id)}
@@ -1145,6 +1175,22 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted, j
             })()}
           </div>
         </div>
+      )}
+      {/* Sub-item creation dialog */}
+      {subItemDialogOpen && (
+        <CreateSubItemDialog
+          open={subItemDialogOpen}
+          onClose={() => setSubItemDialogOpen(false)}
+          jobId={jobId}
+          parentRowId={effectiveParentRowId}
+          docId={doc?.doc_id || item.selected_evidence?.doc_id}
+          budgetItem={item.budget_item}
+          sourcePage={getCurrentPageNum()}
+          getNextSubItemSuffix={getNextSubItemSuffix}
+          onAddSubItem={onAddSubItem}
+          onAddSubItems={onAddSubItems}
+          initialMode={subItemDialogMode}
+        />
       )}
     </div>
   )
