@@ -47,6 +47,28 @@ class FrontendStack(Stack):
             self, "ImportedDataBucket", data_bucket.bucket_name
         )
 
+        # --- SPA routing via CloudFront Function ---
+        # Rewrites non-file paths (no extension) to /index.html so that
+        # client-side routes like /review/{jobId} work.  Unlike the old
+        # distribution-level error_responses approach, this only affects the
+        # default behavior (frontend bucket) and does NOT intercept real
+        # 403/404 errors from the /jobs/* and /uploads/* data-bucket behaviors.
+        spa_rewrite_fn = cloudfront.Function(
+            self,
+            "SpaRewriteFunction",
+            code=cloudfront.FunctionCode.from_inline(
+                "function handler(event) {\n"
+                "  var request = event.request;\n"
+                "  var uri = request.uri;\n"
+                "  if (uri.indexOf('.') !== -1) {\n"
+                "    return request;\n"
+                "  }\n"
+                "  request.uri = '/index.html';\n"
+                "  return request;\n"
+                "}\n"
+            ),
+        )
+
         # --- CloudFront Distribution (3 origins using OAC) ---
         distribution = cloudfront.Distribution(
             self,
@@ -57,6 +79,12 @@ class FrontendStack(Stack):
                 ),
                 viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
                 cache_policy=cloudfront.CachePolicy.CACHING_OPTIMIZED,
+                function_associations=[
+                    cloudfront.FunctionAssociation(
+                        function=spa_rewrite_fn,
+                        event_type=cloudfront.FunctionEventType.VIEWER_REQUEST,
+                    ),
+                ],
             ),
             additional_behaviors={
                 # Serve reconciliation.json and other job outputs
@@ -78,21 +106,6 @@ class FrontendStack(Stack):
                     cache_policy=cloudfront.CachePolicy.CACHING_OPTIMIZED,
                 ),
             },
-            # SPA fallback: 403/404 -> /index.html for client-side routing
-            error_responses=[
-                cloudfront.ErrorResponse(
-                    http_status=403,
-                    response_http_status=200,
-                    response_page_path="/index.html",
-                    ttl=Duration.seconds(0),
-                ),
-                cloudfront.ErrorResponse(
-                    http_status=404,
-                    response_http_status=200,
-                    response_page_path="/index.html",
-                    ttl=Duration.seconds(0),
-                ),
-            ],
         )
 
         # --- Deploy frontend build to S3 ---
