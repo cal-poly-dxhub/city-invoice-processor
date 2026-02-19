@@ -141,7 +141,22 @@ class UserEditOverride(BaseModel):
     page_numbers: List[int]
 
 
+class SubItem(BaseModel):
+    """A user-created sub-item for drilling into summary totals."""
+
+    sub_item_id: str  # e.g., "row_51_a"
+    parent_row_id: str  # e.g., "row_51"
+    label: str  # User-provided name
+    doc_id: str  # Budget item doc_id
+    keywords: List[str] = Field(default_factory=list)
+    amount: Optional[float] = None
+    source_page: Optional[int] = None  # The GL page this was created from
+    candidates: List[CandidateEvidenceSet] = Field(default_factory=list)
+    selected_evidence: Optional[SelectedEvidence] = None
+
+
 class UserEdits(BaseModel):
     """Collection of user edit overrides."""
 
     overrides: List[UserEditOverride] = Field(default_factory=list)
+    sub_items: List[SubItem] = Field(default_factory=list)

@@ -217,6 +217,23 @@ class ProcessingStack(Stack):
         data_bucket.grant_read_write(assemble_fn)
         cache_table.grant_read_write_data(assemble_fn)
 
+        # --- MatchSubItem Lambda (on-demand sub-item matching) ---
+        match_sub_item_fn = _lambda.Function(
+            self,
+            "MatchSubItemFn",
+            runtime=_lambda.Runtime.PYTHON_3_13,
+            handler="handler.lambda_handler",
+            code=_lambda.Code.from_asset(
+                str(PROJECT_ROOT / "infra" / "lambda" / "match_sub_item")
+            ),
+            layers=[backend_layer],
+            environment=common_env,
+            memory_size=1024,
+            timeout=Duration.seconds(30),
+            log_retention=logs.RetentionDays.TWO_WEEKS,
+        )
+        data_bucket.grant_read(match_sub_item_fn)
+
         # --- Step Functions State Machine ---
         # State 1: ParseCSV
         parse_csv_task = tasks.LambdaInvoke(
@@ -460,6 +477,13 @@ class ProcessingStack(Stack):
         api_edits = api_job.add_resource("edits")
         api_edits.add_method("PUT", apigw.LambdaIntegration(save_edits_fn))
         api_edits.add_method("GET", apigw.LambdaIntegration(load_edits_fn))
+
+        # POST /api/jobs/{jobId}/sub-items/match — auto-extract or match sub-items
+        api_sub_items = api_job.add_resource("sub-items")
+        api_sub_items.add_resource("match").add_method(
+            "POST",
+            apigw.LambdaIntegration(match_sub_item_fn),
+        )
 
         self.api_url = api.url
 

@@ -1,0 +1,43 @@
+# Test files - contain sensitive data, do not commit
+test-files/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+ENV/
+env/
+
+# Node
+node_modules/
+dist/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# CDK
+infra/cdk.out/
+infra/outputs.json
+
+# Job artifacts
+backend/jobs/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Old frontends (superseded by frontend/)
+upload-ui/

@@ -1,8 +1,9 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import "./App.css";
 import LineItemCard from "./components/LineItemCard";
 import PDFViewer from "./components/PDFViewer";
 import FilterBar from "./components/FilterBar";
+import { loadUserEdits, saveUserEdits } from "./services/api";
 
 function App() {
   const [jobId, setJobId] = useState("my_job");
@@ -18,6 +19,7 @@ function App() {
   const [completedItems, setCompletedItems] = useState(new Set()); // Track row_ids that are marked done
   const [showSummary, setShowSummary] = useState(false); // Track whether to show finish summary
   const [minConfidenceScore, setMinConfidenceScore] = useState(0.5); // Min confidence threshold (0-1)
+  const [subItems, setSubItems] = useState({}); // { parentRowId: SubItem[] }
 
   useEffect(() => {
     loadReconciliation();
@@ -43,6 +45,115 @@ function App() {
       setLoading(false);
     }
   };
+
+  // Load sub-items from user_edits.json on startup
+  useEffect(() => {
+    loadUserEdits(jobId)
+      .then((edits) => {
+        if (edits?.sub_items?.length > 0) {
+          const grouped = {};
+          for (const si of edits.sub_items) {
+            if (!grouped[si.parent_row_id]) grouped[si.parent_row_id] = [];
+            grouped[si.parent_row_id].push(si);
+          }
+          setSubItems(grouped);
+        }
+      })
+      .catch(() => {
+        // No edits file or API not configured — ignore
+      });
+  }, [jobId]);
+
+  // Persist sub-items whenever they change
+  const persistSubItems = useCallback(
+    (newSubItems) => {
+      const allSubItems = Object.values(newSubItems).flat();
+      saveUserEdits(jobId, { overrides: [], sub_items: allSubItems }).catch(
+        (err) => console.warn("Failed to save sub-items:", err)
+      );
+    },
+    [jobId]
+  );
+
+  const addSubItem = useCallback(
+    (subItem) => {
+      setSubItems((prev) => {
+        const parentList = prev[subItem.parent_row_id] || [];
+        const updated = {
+          ...prev,
+          [subItem.parent_row_id]: [...parentList, subItem],
+        };
+        persistSubItems(updated);
+        return updated;
+      });
+    },
+    [persistSubItems]
+  );
+
+  const addSubItems = useCallback(
+    (parentRowId, newItems) => {
+      setSubItems((prev) => {
+        const parentList = prev[parentRowId] || [];
+        const updated = {
+          ...prev,
+          [parentRowId]: [...parentList, ...newItems],
+        };
+        persistSubItems(updated);
+        return updated;
+      });
+    },
+    [persistSubItems]
+  );
+
+  const removeSubItem = useCallback(
+    (parentRowId, subItemId) => {
+      setSubItems((prev) => {
+        const parentList = (prev[parentRowId] || []).filter(
+          (si) => si.sub_item_id !== subItemId
+        );
+        const updated = { ...prev, [parentRowId]: parentList };
+        if (parentList.length === 0) delete updated[parentRowId];
+        persistSubItems(updated);
+        return updated;
+      });
+    },
+    [persistSubItems]
+  );
+
+  // Generate the next sub-item suffix letter for a parent
+  const getNextSubItemSuffix = useCallback(
+    (parentRowId) => {
+      const existing = subItems[parentRowId] || [];
+      const letter = String.fromCharCode(97 + existing.length); // a, b, c, ...
+      return letter;
+    },
+    [subItems]
+  );
+
+  // Shape a sub-item to look like a line item for PDFViewer
+  const shapeSubItemAsLineItem = (subItem, parentItem) => ({
+    row_id: subItem.sub_item_id,
+    row_index: parentItem.row_index,
+    budget_item: parentItem.budget_item,
+    raw: {
+      amount: subItem.amount,
+      explanation: subItem.label,
+    },
+    normalized: {
+      budget_item: parentItem.budget_item,
+      amount: subItem.amount,
+      explanation: subItem.keywords?.join(", ") || "",
+    },
+    candidates: subItem.candidates || [],
+    selected_evidence: subItem.selected_evidence || {
+      doc_id: subItem.doc_id,
+      page_numbers: [],
+      selection_source: "auto",
+    },
+    _isSubItem: true,
+    _parentRowId: subItem.parent_row_id,
+    _label: subItem.label,
+  });
 
   const markGroupDone = (rowId) => {
     // Check if item is already completed
@@ -329,6 +440,14 @@ function App() {
                   isSelected={selectedItem?.row_id === item.row_id}
                   isCompleted={completedItems.has(item.row_id)}
                   onClick={() => setSelectedItem(item)}
+                  subItems={subItems[item.row_id] || []}
+                  selectedSubItemId={selectedItem?._isSubItem ? selectedItem.row_id : null}
+                  onSubItemClick={(subItem) =>
+                    setSelectedItem(shapeSubItemAsLineItem(subItem, item))
+                  }
+                  onRemoveSubItem={(subItemId) =>
+                    removeSubItem(item.row_id, subItemId)
+                  }
                 />
               ))}
             </div>
@@ -343,6 +462,11 @@ function App() {
               matchType={getMatchType(selectedItem)}
               onMarkGroupDone={markGroupDone}
               isCompleted={completedItems.has(selectedItem.row_id)}
+              jobId={jobId}
+              onAddSubItem={addSubItem}
+              onAddSubItems={addSubItems}
+              getNextSubItemSuffix={getNextSubItemSuffix}
+              subItems={subItems[selectedItem?._isSubItem ? selectedItem._parentRowId : selectedItem?.row_id] || []}
             />
           ) : (
             <div className="empty-state">

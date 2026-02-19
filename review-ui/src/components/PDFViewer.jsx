@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import * as pdfjsLib from 'pdfjs-dist'
 import SearchBar from './SearchBar'
+import CreateSubItemDialog from './CreateSubItemDialog'
 import './PDFViewer.css'
 
 // Set up PDF.js worker
@@ -22,7 +23,7 @@ const LEGACY_FILENAME_MAP = {
   'Indirect Costs': 'Indirect_Costs.pdf',
 }
 
-function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted }) {
+function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted, jobId, onAddSubItem, onAddSubItems, getNextSubItemSuffix, subItems = [] }) {
   const [pdfsReady, setPdfsReady] = useState(false) // True when all source PDFs are loaded
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -40,6 +41,9 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
   const [userAnnotations, setUserAnnotations] = useState({}) // User-drawn highlights: { [candidateKey]: { [pageNum]: [ {left, top, width, height} ] } }
   const [drawingMode, setDrawingMode] = useState(false) // Whether drawing mode is active
   const [drawingRect, setDrawingRect] = useState(null) // Pixel coords of in-progress rubber-band rect
+  const [contextMenu, setContextMenu] = useState(null) // { x, y, pageNum, annotationIdx }
+  const [subItemDialogOpen, setSubItemDialogOpen] = useState(false)
+  const [subItemDialogMode, setSubItemDialogMode] = useState('manual') // 'manual' or 'auto'
   const pageInherentRotations = useRef({}) // Track PDF's inherent rotation
   const canvasRefs = useRef({})
   const containerRefs = useRef({})
@@ -710,6 +714,48 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
     })
   }
 
+  // Context menu handlers for annotations
+  const handleAnnotationContextMenu = (e, pageNum, annotationIdx) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      pageNum,
+      annotationIdx,
+    })
+  }
+
+  const closeContextMenu = () => setContextMenu(null)
+
+  const handleCreateSubItemFromAnnotation = () => {
+    setSubItemDialogMode('manual')
+    setSubItemDialogOpen(true)
+    closeContextMenu()
+  }
+
+  const handleDeleteAnnotationFromMenu = () => {
+    if (contextMenu) {
+      deleteAnnotation(contextMenu.pageNum, contextMenu.annotationIdx)
+    }
+    closeContextMenu()
+  }
+
+  const openAutoExtractDialog = () => {
+    setSubItemDialogMode('auto')
+    setSubItemDialogOpen(true)
+  }
+
+  // Get the current page for the dialog's source_page
+  const getCurrentPageNum = () => {
+    if (viewMode === 'group') return pageNumbers[currentPageIdx] || 1
+    if (viewMode === 'all') return allPagesCurrentPage
+    if (viewMode === 'search') return searchResultPages[searchPageIdx] || 1
+    return 1
+  }
+
+  // Determine the parent row_id (for sub-items, use the parent; otherwise use current)
+  const effectiveParentRowId = item._isSubItem ? item._parentRowId : item.row_id
 
   return (
     <div className="pdf-viewer">
@@ -922,6 +968,16 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
                         </button>
                       )}
 
+                      {onAddSubItems && !item._isSubItem && (
+                        <button
+                          className="auto-extract-btn"
+                          onClick={openAutoExtractDialog}
+                          title="Auto-extract sub-items from table rows on this page"
+                        >
+                          Auto-Extract Sub-Items
+                        </button>
+                      )}
+
                       <button
                         className={`mark-done-btn ${isCompleted ? 'completed' : ''}`}
                         onClick={() => onMarkGroupDone(item.row_id)}
@@ -1067,6 +1123,7 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
                                   width: `${pixelWidth}px`,
                                   height: `${pixelHeight}px`,
                                 }}
+                                onContextMenu={(e) => handleAnnotationContextMenu(e, pageNum, idx)}
                               >
                                 <button
                                   className="annotation-delete-btn"
@@ -1110,6 +1167,48 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted })
             })()}
           </div>
         </div>
+      )}
+      {/* Context menu for annotations */}
+      {contextMenu && (
+        <>
+          <div className="context-menu-backdrop" onClick={closeContextMenu} />
+          <div
+            className="context-menu"
+            style={{ left: contextMenu.x, top: contextMenu.y }}
+          >
+            {onAddSubItem && !item._isSubItem && (
+              <button
+                className="context-menu-item"
+                onClick={handleCreateSubItemFromAnnotation}
+              >
+                Create Sub-Item
+              </button>
+            )}
+            <button
+              className="context-menu-item danger"
+              onClick={handleDeleteAnnotationFromMenu}
+            >
+              Delete Annotation
+            </button>
+          </div>
+        </>
+      )}
+
+      {/* Sub-item creation dialog */}
+      {subItemDialogOpen && (
+        <CreateSubItemDialog
+          open={subItemDialogOpen}
+          onClose={() => setSubItemDialogOpen(false)}
+          jobId={jobId}
+          parentRowId={effectiveParentRowId}
+          docId={doc?.doc_id || item.selected_evidence?.doc_id}
+          budgetItem={item.budget_item}
+          sourcePage={getCurrentPageNum()}
+          getNextSubItemSuffix={getNextSubItemSuffix}
+          onAddSubItem={onAddSubItem}
+          onAddSubItems={onAddSubItems}
+          initialMode={subItemDialogMode}
+        />
       )}
     </div>
   )
