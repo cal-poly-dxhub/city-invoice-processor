@@ -1,25 +1,10 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useDropzone } from 'react-dropzone'
 import { API_BASE } from '../config'
+import { BUDGET_ITEMS, slugify, classifyFile } from '../utils/budgetItemClassifier'
+import UnassignedFilesModal from '../components/UnassignedFilesModal'
 import './UploadPage.css'
-
-const BUDGET_ITEMS = [
-  "Salary",
-  "Fringe",
-  "Contractual Service",
-  "Equipment",
-  "Insurance",
-  "Travel and Conferences",
-  "Space Rental/Occupancy Costs",
-  "Telecommunications",
-  "Utilities",
-  "Supplies",
-  "Other",
-  "Indirect Costs",
-]
-
-const slugify = (text) =>
-  text.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '')
 
 function UploadPage() {
   const navigate = useNavigate()
@@ -29,6 +14,7 @@ function UploadPage() {
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState('')
   const [uploadError, setUploadError] = useState(null)
+  const [unassignedFiles, setUnassignedFiles] = useState(null)
 
   const handleCsvChange = (e) => {
     const file = e.target.files[0]
@@ -40,38 +26,60 @@ function UploadPage() {
     }
   }
 
-  const handlePdfFileSelect = (budgetItem, e) => {
-    const newFiles = Array.from(e.target.files).filter(f => f.name.toLowerCase().endsWith('.pdf'))
-    if (newFiles.length === 0) {
-      alert('No PDF files found in selection')
-      e.target.value = ''
-      return
+  const processNewFiles = (acceptedFiles) => {
+    const pdfs = acceptedFiles.filter(f => f.name.toLowerCase().endsWith('.pdf'))
+    if (pdfs.length === 0) return
+
+    const classified = []   // { file, budgetItem }
+    const unclassified = [] // File[]
+
+    for (const file of pdfs) {
+      const budgetItem = classifyFile(file)
+      if (budgetItem) {
+        classified.push({ file, budgetItem })
+      } else {
+        unclassified.push(file)
+      }
     }
-    setPdfFiles(prev => {
-      const existing = prev[budgetItem] || []
-      const existingKeys = new Set(existing.map(f => `${f.name}__${f.size}`))
-      const unique = newFiles.filter(f => !existingKeys.has(`${f.name}__${f.size}`))
-      const merged = [...existing, ...unique]
-      return { ...prev, [budgetItem]: merged }
-    })
-    e.target.value = ''
+
+    // Add classified files to state immediately (deduplicate by name+size)
+    if (classified.length > 0) {
+      setPdfFiles(prev => {
+        const next = { ...prev }
+        for (const { file, budgetItem } of classified) {
+          const existing = next[budgetItem] || []
+          const existingKeys = new Set(existing.map(f => `${f.name}__${f.size}`))
+          if (!existingKeys.has(`${file.name}__${file.size}`)) {
+            next[budgetItem] = [...existing, file]
+          }
+        }
+        return next
+      })
+    }
+
+    // Show modal for unclassified files
+    if (unclassified.length > 0) {
+      setUnassignedFiles(unclassified)
+    }
   }
 
-  const handlePdfFolderSelect = (budgetItem, e) => {
-    const newFiles = Array.from(e.target.files).filter(f => f.name.toLowerCase().endsWith('.pdf'))
-    if (newFiles.length === 0) {
-      alert('No PDF files found in the selected folder')
-      e.target.value = ''
-      return
-    }
+  const handleModalConfirm = (assignmentMap) => {
     setPdfFiles(prev => {
-      const existing = prev[budgetItem] || []
-      const existingKeys = new Set(existing.map(f => `${f.name}__${f.size}`))
-      const unique = newFiles.filter(f => !existingKeys.has(`${f.name}__${f.size}`))
-      const merged = [...existing, ...unique]
-      return { ...prev, [budgetItem]: merged }
+      const next = { ...prev }
+      for (const [file, budgetItem] of assignmentMap) {
+        const existing = next[budgetItem] || []
+        const existingKeys = new Set(existing.map(f => `${f.name}__${f.size}`))
+        if (!existingKeys.has(`${file.name}__${file.size}`)) {
+          next[budgetItem] = [...existing, file]
+        }
+      }
+      return next
     })
-    e.target.value = ''
+    setUnassignedFiles(null)
+  }
+
+  const handleModalCancel = () => {
+    setUnassignedFiles(null)
   }
 
   const handleRemoveFile = (budgetItem, index) => {
@@ -86,11 +94,8 @@ function UploadPage() {
     })
   }
 
-  const handleClearFiles = (budgetItem) => {
-    setPdfFiles(prev => {
-      const { [budgetItem]: _, ...rest } = prev
-      return rest
-    })
+  const handleClearAll = () => {
+    setPdfFiles({})
   }
 
   const handleUpload = async () => {
@@ -191,19 +196,18 @@ function UploadPage() {
     }
   }
 
-  const getUploadStats = () => {
-    const budgetItemsWithFiles = Object.keys(pdfFiles).filter(k => pdfFiles[k].length > 0)
-    const totalFiles = Object.values(pdfFiles).reduce((sum, files) => sum + files.length, 0)
-    return {
-      csvReady: !!csvFile,
-      pdfCount: budgetItemsWithFiles.length,
-      totalFiles,
-      totalPdfs: BUDGET_ITEMS.length,
-      canUpload: csvFile && budgetItemsWithFiles.length > 0
-    }
-  }
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+    onDrop: processNewFiles,
+    accept: { 'application/pdf': ['.pdf'] },
+    multiple: true,
+    disabled: uploading,
+    noClick: false,
+  })
 
-  const stats = getUploadStats()
+  const totalFiles = Object.values(pdfFiles).reduce((sum, files) => sum + files.length, 0)
+  const budgetItemsWithFiles = Object.keys(pdfFiles).filter(k => pdfFiles[k].length > 0)
+  const csvReady = !!csvFile
+  const canUpload = csvReady && budgetItemsWithFiles.length > 0
 
   return (
     <div className="upload-page">
@@ -214,9 +218,9 @@ function UploadPage() {
             <p className="subtitle">Upload CSV Invoice and Supporting PDF Documents</p>
           </div>
           <button
-            className={`upload-button ${!stats.canUpload ? 'disabled' : ''} ${uploading ? 'uploading' : ''}`}
+            className={`upload-button ${!canUpload ? 'disabled' : ''} ${uploading ? 'uploading' : ''}`}
             onClick={handleUpload}
-            disabled={!stats.canUpload || uploading}
+            disabled={!canUpload || uploading}
           >
             {uploading ? 'Uploading...' : 'Upload'}
           </button>
@@ -238,15 +242,15 @@ function UploadPage() {
       <div className="upload-stats">
         <div className="stat">
           <span className="stat-label">CSV File:</span>
-          <span className={`stat-value ${stats.csvReady ? 'ready' : ''}`}>
-            {stats.csvReady ? 'Ready' : 'Not selected'}
+          <span className={`stat-value ${csvReady ? 'ready' : ''}`}>
+            {csvReady ? 'Ready' : 'Not selected'}
           </span>
         </div>
         <div className="stat">
           <span className="stat-label">PDF Files:</span>
-          <span className={`stat-value ${stats.pdfCount > 0 ? 'ready' : ''}`}>
-            {stats.pdfCount} of {stats.totalPdfs} budget items
-            {stats.totalFiles > stats.pdfCount && ` (${stats.totalFiles} files)`}
+          <span className={`stat-value ${budgetItemsWithFiles.length > 0 ? 'ready' : ''}`}>
+            {budgetItemsWithFiles.length} of {BUDGET_ITEMS.length} budget items
+            {totalFiles > budgetItemsWithFiles.length && ` (${totalFiles} files)`}
           </span>
         </div>
       </div>
@@ -291,97 +295,79 @@ function UploadPage() {
         <section className="upload-section">
           <div className="section-header">
             <h2>Budget Item PDFs</h2>
-            <p className="section-description">Upload supporting PDF documents for each budget item</p>
+            <p className="section-description">
+              Drop all PDF files here — files are auto-sorted by filename
+            </p>
           </div>
 
-          <div className="pdf-grid">
-            {BUDGET_ITEMS.map((item) => {
-              const files = pdfFiles[item] || []
-              const hasFiles = files.length > 0
+          {/* Dropzone */}
+          <div
+            {...getRootProps()}
+            className={`dropzone ${isDragActive ? 'dropzone-active' : ''} ${totalFiles > 0 ? 'dropzone-has-files' : ''}`}
+          >
+            <input {...getInputProps()} />
+            <div className="dropzone-content">
+              <p className="dropzone-text">
+                {isDragActive
+                  ? 'Drop PDF files here'
+                  : 'Drag & drop PDF files or folders here, or click to browse'}
+              </p>
+              <p className="dropzone-hint">
+                Files named after budget items (e.g. Salary.pdf, Fringe_Q1.pdf) are auto-classified
+              </p>
+            </div>
+          </div>
 
-              return (
-                <div key={item} className={`file-input-card ${hasFiles ? 'has-file' : ''}`}>
-                  <div className="budget-item-header">
-                    <div className="budget-item-label">{item}</div>
-                    {hasFiles && (
-                      <span className="file-count-badge">
-                        {files.length} file{files.length !== 1 ? 's' : ''}
-                      </span>
-                    )}
+          {/* Grouped file summary */}
+          {totalFiles > 0 && (
+            <div className="file-summary">
+              <div className="file-summary-header">
+                <span className="file-summary-title">
+                  {totalFiles} file{totalFiles !== 1 ? 's' : ''} across{' '}
+                  {budgetItemsWithFiles.length} budget item{budgetItemsWithFiles.length !== 1 ? 's' : ''}
+                </span>
+                <button className="clear-all-btn" onClick={handleClearAll} disabled={uploading}>
+                  Clear All
+                </button>
+              </div>
+
+              {BUDGET_ITEMS.filter((item) => pdfFiles[item]?.length > 0).map((item) => (
+                <div key={item} className="file-group">
+                  <div className="file-group-header">
+                    <span className="file-group-name">{item}</span>
+                    <span className="file-count-badge">
+                      {pdfFiles[item].length} file{pdfFiles[item].length !== 1 ? 's' : ''}
+                    </span>
                   </div>
-
-                  {hasFiles && (
-                    <div className="file-list">
-                      {files.map((file, idx) => (
-                        <div key={`${file.name}-${idx}`} className="file-list-item">
-                          <span className="file-list-name" title={file.name}>
-                            {file.name}
-                          </span>
-                          <button
-                            className="file-remove-btn"
-                            onClick={() => handleRemoveFile(item, idx)}
-                            title="Remove file"
-                            disabled={uploading}
-                          >
-                            &times;
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  <div className="file-actions">
-                    <div className="file-input-wrapper">
-                      <input
-                        type="file"
-                        id={`pdf-files-${item}`}
-                        accept=".pdf"
-                        multiple
-                        onChange={(e) => handlePdfFileSelect(item, e)}
-                        className="file-input"
-                        disabled={uploading}
-                      />
-                      <label htmlFor={`pdf-files-${item}`} className="file-input-label-btn">
-                        {hasFiles ? 'Add Files' : 'Select Files'}
-                      </label>
-                    </div>
-
-                    <div className="file-input-wrapper">
-                      <input
-                        type="file"
-                        id={`pdf-folder-${item}`}
-                        webkitdirectory=""
-                        onChange={(e) => handlePdfFolderSelect(item, e)}
-                        className="file-input"
-                        disabled={uploading}
-                      />
-                      <label htmlFor={`pdf-folder-${item}`} className="file-input-label-btn folder-btn">
-                        Select Folder
-                      </label>
-                    </div>
-
-                    {hasFiles && (
-                      <button
-                        className="clear-all-btn"
-                        onClick={() => handleClearFiles(item)}
-                        disabled={uploading}
-                      >
-                        Clear All
-                      </button>
-                    )}
+                  <div className="file-list">
+                    {pdfFiles[item].map((file, idx) => (
+                      <div key={`${file.name}-${idx}`} className="file-list-item">
+                        <span className="file-list-name" title={file.name}>{file.name}</span>
+                        <button
+                          className="file-remove-btn"
+                          onClick={() => handleRemoveFile(item, idx)}
+                          title="Remove file"
+                          disabled={uploading}
+                        >
+                          &times;
+                        </button>
+                      </div>
+                    ))}
                   </div>
-
-                  {!hasFiles && (
-                    <div className="file-input-hint">
-                      Select one or more PDFs, or an entire folder
-                    </div>
-                  )}
                 </div>
-              )
-            })}
-          </div>
+              ))}
+            </div>
+          )}
         </section>
       </main>
+
+      {unassignedFiles && (
+        <UnassignedFilesModal
+          files={unassignedFiles}
+          onConfirm={handleModalConfirm}
+          onCancel={handleModalCancel}
+        />
+      )}
     </div>
   )
 }

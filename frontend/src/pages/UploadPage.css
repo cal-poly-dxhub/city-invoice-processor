@@ -173,21 +173,6 @@
   background: rgba(45, 80, 22, 0.02);
 }
 
-.budget-item-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 1rem;
-}
-
-.budget-item-label {
-  font-family: var(--font-serif);
-  font-size: 1.125rem;
-  font-weight: 600;
-  margin-bottom: 0;
-  color: var(--color-text);
-}
-
 .file-count-badge {
   font-family: var(--font-mono);
   font-size: 0.75rem;
@@ -255,11 +240,104 @@
   color: var(--color-text-secondary);
 }
 
+/* Dropzone */
+.dropzone {
+  border: 2px dashed var(--color-border);
+  border-radius: 4px;
+  padding: 3rem 2rem;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.2s;
+  background: var(--color-surface);
+}
+
+.dropzone:hover {
+  border-color: var(--color-accent);
+  background: rgba(42, 75, 124, 0.02);
+}
+
+.dropzone-active {
+  border-color: var(--color-accent);
+  background: rgba(42, 75, 124, 0.05);
+  border-style: solid;
+}
+
+.dropzone-has-files {
+  border-color: var(--color-success);
+}
+
+.dropzone-content {
+  pointer-events: none;
+}
+
+.dropzone-text {
+  font-family: var(--font-serif);
+  font-size: 1.125rem;
+  font-weight: 500;
+  margin-bottom: 0.5rem;
+  color: var(--color-text);
+}
+
+.dropzone-hint {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+/* File Summary */
+.file-summary {
+  margin-top: 1.5rem;
+  border: 2px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-surface);
+}
+
+.file-summary-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.file-summary-title {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-secondary);
+}
+
+/* File Group (per budget item within summary) */
+.file-group {
+  border-bottom: 1px solid var(--color-border);
+}
+
+.file-group:last-child {
+  border-bottom: none;
+}
+
+.file-group-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 1.25rem;
+  background: rgba(0, 0, 0, 0.02);
+}
+
+.file-group-name {
+  font-family: var(--font-serif);
+  font-size: 1rem;
+  font-weight: 600;
+}
+
 /* File List (multi-file per budget item) */
 .file-list {
-  margin-bottom: 1rem;
-  border: 1px solid var(--color-border);
-  border-radius: 2px;
+  margin-bottom: 0;
+  border: none;
+  border-radius: 0;
   max-height: 150px;
   overflow-y: auto;
 }
@@ -268,7 +346,7 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 0.4rem 0.75rem;
+  padding: 0.4rem 0.75rem 0.4rem 1.25rem;
   font-family: var(--font-mono);
   font-size: 0.8125rem;
   border-bottom: 1px solid var(--color-border);
@@ -311,46 +389,7 @@
   cursor: not-allowed;
 }
 
-/* Action Buttons Row */
-.file-actions {
-  display: flex;
-  gap: 0.5rem;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-.file-input-label-btn {
-  display: inline-block;
-  padding: 0.6rem 1.25rem;
-  background: var(--color-text);
-  color: var(--color-surface);
-  font-family: var(--font-sans);
-  font-weight: 600;
-  font-size: 0.8125rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  border-radius: 2px;
-  cursor: pointer;
-  transition: all 0.2s;
-  white-space: nowrap;
-}
-
-.file-input-label-btn:hover {
-  background: var(--color-accent);
-  transform: translateY(-1px);
-}
-
-.file-input-label-btn.folder-btn {
-  background: var(--color-surface);
-  color: var(--color-text);
-  border: 2px solid var(--color-text);
-}
-
-.file-input-label-btn.folder-btn:hover {
-  background: var(--color-text);
-  color: var(--color-surface);
-}
-
+/* Clear All Button */
 .clear-all-btn {
   background: none;
   border: none;
@@ -371,16 +410,6 @@
 .clear-all-btn:disabled {
   opacity: 0.3;
   cursor: not-allowed;
-}
-
-/* Hint Text */
-.file-input-hint {
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  color: var(--color-text-secondary);
-  margin-top: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
 }
 
 /* Job Name Inline */
@@ -415,13 +444,6 @@
   opacity: 0.5;
 }
 
-/* PDF Grid */
-.pdf-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
-  gap: 1.5rem;
-}
-
 /* Responsive */
 @media (max-width: 768px) {
   .upload-header .header-content {
@@ -439,10 +461,6 @@
     gap: 1rem;
   }
 
-  .pdf-grid {
-    grid-template-columns: 1fr;
-  }
-
   .file-input-label {
     flex-direction: column;
     align-items: flex-start;
@@ -453,12 +471,7 @@
     text-align: center;
   }
 
-  .file-actions {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .file-input-label-btn {
-    text-align: center;
+  .dropzone {
+    padding: 2rem 1rem;
   }
 }
