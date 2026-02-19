@@ -15,7 +15,6 @@ from pathlib import Path
 
 from aws_cdk import (
     CfnOutput,
-    Duration,
     Fn,
     RemovalPolicy,
     Stack,
@@ -102,29 +101,10 @@ class FrontendStack(Stack):
             protocol_policy=cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
         )
 
-        # Cache policy: never cache API responses
-        api_cache_policy = cloudfront.CachePolicy(
-            self,
-            "ApiCachePolicy",
-            cache_policy_name="InvoiceProcessorApiNoCache",
-            default_ttl=Duration.seconds(0),
-            min_ttl=Duration.seconds(0),
-            max_ttl=Duration.seconds(0),
-            # Forward query strings so API can use them
-            query_string_behavior=cloudfront.CacheQueryStringBehavior.all(),
-        )
-
-        # Origin request policy: forward Content-Type so API Gateway can
-        # parse JSON request bodies.
-        api_origin_request_policy = cloudfront.OriginRequestPolicy(
-            self,
-            "ApiOriginRequestPolicy",
-            origin_request_policy_name="InvoiceProcessorApiForwardAll",
-            query_string_behavior=cloudfront.OriginRequestQueryStringBehavior.all(),
-            header_behavior=cloudfront.OriginRequestHeaderBehavior.allow_list(
-                "Content-Type",
-            ),
-        )
+        # Use built-in policies for the API behavior:
+        # - CACHING_DISABLED: no caching, forwards query strings automatically
+        # - ALL_VIEWER_EXCEPT_HOST_HEADER: forwards all viewer headers
+        #   (Content-Type, Accept, etc.) except Host to the API Gateway origin
 
         # --- CloudFront Distribution ---
         distribution = cloudfront.Distribution(
@@ -167,8 +147,8 @@ class FrontendStack(Stack):
                     origin=api_origin,
                     viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
                     allowed_methods=cloudfront.AllowedMethods.ALLOW_ALL,
-                    cache_policy=api_cache_policy,
-                    origin_request_policy=api_origin_request_policy,
+                    cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,
+                    origin_request_policy=cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
                 ),
             },
         )
