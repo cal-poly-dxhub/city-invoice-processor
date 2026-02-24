@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import * as pdfjsLib from 'pdfjs-dist'
 import SearchBar from './SearchBar'
 import CreateSubItemDialog from './CreateSubItemDialog'
@@ -37,6 +37,7 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted, j
   const [pageRotations, setPageRotations] = useState({}) // Track user-applied rotation per page (0, 90, 180, 270)
   const [viewportDimensions, setViewportDimensions] = useState({}) // Store viewport dimensions for each page
   const [searchQuery, setSearchQuery] = useState('') // User's search query
+  const [searchMode, setSearchMode] = useState('any') // 'any' or 'all' for multi-term search
   const [searchResults, setSearchResults] = useState({}) // Search results: { page_number: [boxes] }
   const [drawingMode, setDrawingMode] = useState(false) // Whether drawing mode is active
   const [drawingRect, setDrawingRect] = useState(null) // Pixel coords of in-progress rubber-band rect
@@ -345,11 +346,21 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted, j
     return candidateHighlights
   }
 
-  const performSearch = (query) => {
-    // Clear search results if query is too short
-    if (!query || query.length < 2) {
+  // Parse comma-separated search terms, trim, lowercase, filter short terms
+  const parseSearchTerms = (query) => {
+    if (!query) return []
+    return query.split(',').map(t => t.trim().toLowerCase()).filter(t => t.length >= 2)
+  }
+
+  // Memoize parsed terms to avoid re-parsing on every render
+  const parsedTerms = useMemo(() => parseSearchTerms(searchQuery), [searchQuery])
+
+  const performSearch = (query, mode) => {
+    const terms = parseSearchTerms(query)
+
+    // Clear results if no valid terms
+    if (terms.length === 0) {
       setSearchResults({})
-      // If we were in search mode, go back to group mode
       if (viewMode === 'search') {
         setViewMode('group')
       }
@@ -363,7 +374,6 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted, j
       return
     }
 
-    const normalizedQuery = query.toLowerCase()
     const results = {}
     let totalMatches = 0
 
@@ -375,23 +385,46 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted, j
         return
       }
 
-      // Filter words that contain the search query (substring match)
-      const matchedBoxes = pageData.words
-        .filter(word => word.text && word.text.toLowerCase().includes(normalizedQuery))
-        .map(word => ({
-          left: word.left,
-          top: word.top,
-          width: word.width,
-          height: word.height
-        }))
+      // Collect matching bounding boxes and track which terms matched on this page
+      const matchedBoxes = []
+      const termsMatchedOnPage = new Set()
 
-      if (matchedBoxes.length > 0) {
+      for (const word of pageData.words) {
+        if (!word.text) continue
+        const wordLower = word.text.toLowerCase()
+
+        let wordMatched = false
+        for (const term of terms) {
+          if (wordLower.includes(term)) {
+            termsMatchedOnPage.add(term)
+            // Only add one bounding box per word even if it matches multiple terms
+            if (!wordMatched) {
+              matchedBoxes.push({
+                left: word.left,
+                top: word.top,
+                width: word.width,
+                height: word.height
+              })
+              wordMatched = true
+            }
+          }
+        }
+      }
+
+      // Decide if this page qualifies based on search mode.
+      // In "all" mode, we still highlight ALL matched words on qualifying pages
+      // (not just co-occurring terms), so users can see every relevant match.
+      const pageQualifies = mode === 'all'
+        ? terms.every(t => termsMatchedOnPage.has(t))
+        : termsMatchedOnPage.size > 0
+
+      if (pageQualifies && matchedBoxes.length > 0) {
         results[pageNum] = matchedBoxes
         totalMatches += matchedBoxes.length
       }
     })
 
-    console.log(`PDFViewer: Search for "${query}" found ${totalMatches} matches on ${Object.keys(results).length} pages`)
+    console.log(`PDFViewer: Search for "${query}" (${mode}) found ${totalMatches} matches on ${Object.keys(results).length} pages`)
     setSearchResults(results)
 
     // Switch to search mode if we have results
@@ -404,12 +437,12 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted, j
     }
   }
 
-  // Effect to perform search when query changes
+  // Effect to perform search when query or mode changes
   useEffect(() => {
     if (doc && doc.pages_data) {
-      performSearch(searchQuery)
+      performSearch(searchQuery, searchMode)
     }
-  }, [searchQuery, doc])
+  }, [searchQuery, searchMode, doc])
 
   const getHighlightSummary = () => {
     // Return a summary of what's being highlighted
@@ -428,23 +461,29 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted, j
   }
 
   const getSearchResultSummary = () => {
-    // Build search result summary for display
-    if (!searchQuery || searchQuery.length < 2) {
-      return null
-    }
+    if (parsedTerms.length === 0) return null
 
-    const pageNums = Object.keys(searchResults).map(n => parseInt(n)).sort((a, b) => a - b)
+    const pageCount = Object.keys(searchResults).length
     const totalMatches = Object.values(searchResults).reduce((sum, boxes) => sum + boxes.length, 0)
 
-    if (pageNums.length === 0) {
-      return `No matches found for "${searchQuery}"`
+    if (pageCount === 0) {
+      if (parsedTerms.length === 1) {
+        return `No matches for "${parsedTerms[0]}"`
+      }
+      return `No pages match ${searchMode === 'all' ? 'all' : 'any'} terms`
     }
 
-    const pagesList = pageNums.length <= 5
-      ? pageNums.join(', ')
-      : `${pageNums.slice(0, 5).join(', ')}, ...`
+    // Single term: keep existing page-list format
+    if (parsedTerms.length === 1) {
+      const pageNums = Object.keys(searchResults).map(n => parseInt(n)).sort((a, b) => a - b)
+      const pagesList = pageNums.length <= 5
+        ? pageNums.join(', ')
+        : `${pageNums.slice(0, 5).join(', ')}, ...`
+      return `Found on pages: ${pagesList} (${totalMatches} matches)`
+    }
 
-    return `Found on pages: ${pagesList} (${totalMatches} matches)`
+    // Multi-term: concise summary
+    return `${totalMatches} matches on ${pageCount} page${pageCount !== 1 ? 's' : ''}`
   }
 
   const getMatchClass = () => {
@@ -823,6 +862,9 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted, j
               query={searchQuery}
               onQueryChange={setSearchQuery}
               resultSummary={getSearchResultSummary()}
+              searchMode={searchMode}
+              onSearchModeChange={setSearchMode}
+              hasMultipleTerms={parsedTerms.length > 1}
             />
           )}
 
