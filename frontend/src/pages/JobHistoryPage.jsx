@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { API_BASE } from '../config'
+import { authFetch } from '../services/authenticatedFetch'
 import './JobHistoryPage.css'
 
 function JobHistoryPage() {
@@ -18,7 +19,7 @@ function JobHistoryPage() {
     try {
       setLoading(true)
       setError(null)
-      const resp = await fetch(`${API_BASE}/api/jobs`)
+      const resp = await authFetch(`${API_BASE}/api/jobs`)
       if (!resp.ok) throw new Error(`Failed to load jobs: ${resp.status}`)
       const data = await resp.json()
       setJobs(data.jobs)
@@ -32,7 +33,7 @@ function JobHistoryPage() {
   const handleRename = async (jobId) => {
     if (!editName.trim()) return
     try {
-      const resp = await fetch(`${API_BASE}/api/jobs/${jobId}`, {
+      const resp = await authFetch(`${API_BASE}/api/jobs/${jobId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ job_name: editName.trim() }),

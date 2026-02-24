@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams } from "react-router-dom";
 import { API_BASE, DATA_BASE } from "../config";
+import { authFetch } from "../services/authenticatedFetch";
 import LineItemCard from "../components/LineItemCard";
 import PDFViewer from "../components/PDFViewer";
 import FilterBar from "../components/FilterBar";
@@ -43,7 +44,7 @@ function ReviewPage() {
 
   const checkJobStatus = async () => {
     try {
-      const resp = await fetch(`${API_BASE}/api/jobs/${jobId}/status`);
+      const resp = await authFetch(`${API_BASE}/api/jobs/${jobId}/status`);
       if (!resp.ok) return null;
       const json = await resp.json();
       return json.status;
@@ -121,7 +122,7 @@ function ReviewPage() {
 
   const loadUserEdits = async () => {
     try {
-      const resp = await fetch(`${API_BASE}/api/jobs/${jobId}/edits`);
+      const resp = await authFetch(`${API_BASE}/api/jobs/${jobId}/edits`);
       if (!resp.ok) return;
       const edits = await resp.json();
       if (edits.edited_candidates) setUserEditedCandidates(edits.edited_candidates);
@@ -148,7 +149,7 @@ function ReviewPage() {
     saveTimerRef.current = setTimeout(async () => {
       try {
         const allSubItems = Object.values(subs).flat();
-        await fetch(`${API_BASE}/api/jobs/${jobId}/edits`, {
+        await authFetch(`${API_BASE}/api/jobs/${jobId}/edits`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({

@@ -62,6 +62,15 @@ for stack_name, outputs in data.items():
         break
 ")
 
+USER_POOL_ID=$(python3 -c "
+import json
+data = json.load(open('infra/outputs.json'))
+for stack_name, outputs in data.items():
+    if 'UserPoolId' in outputs:
+        print(outputs['UserPoolId'])
+        break
+")
+
 echo ""
 echo "Deployment completed successfully!"
 echo ""
@@ -69,3 +78,12 @@ echo "Application URLs:"
 echo "  Frontend: $CLOUDFRONT_URL"
 echo "  API (direct): $API_URL"
 echo "  API (via CloudFront): $CLOUDFRONT_URL/api/"
+echo ""
+echo "Authentication:"
+echo "  Cognito User Pool ID: $USER_POOL_ID"
+echo "  Create a user:"
+echo "    aws cognito-idp admin-create-user \\"
+echo "      --user-pool-id $USER_POOL_ID \\"
+echo "      --username user@example.com \\"
+echo "      --user-attributes Name=email,Value=user@example.com \\"
+echo "      --temporary-password 'TempPass1!'"
