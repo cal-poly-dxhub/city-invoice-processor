@@ -236,7 +236,7 @@ def lambda_handler(event, context):
             "created_at": datetime.utcnow().isoformat() + "Z",
             "aws_region": os.environ.get("AWS_REGION", "us-west-2"),
             "bedrock_model_id": os.environ.get(
-                "BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+                "BEDROCK_MODEL_ID", "us.anthropic.claude-haiku-4-5-20251001-v1:0"
             ),
             "textract_mode": os.environ.get("TEXTRACT_MODE", "auto"),
         },

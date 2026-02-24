@@ -42,7 +42,7 @@ class ProcessingStack(Stack):
             "TEXT_MIN_CHARS": "40",
             "MAX_WORKERS": "5",
             "MIN_CANDIDATE_SCORE": "0.1",
-            "BEDROCK_MODEL_ID": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            "BEDROCK_MODEL_ID": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
             "BEDROCK_VISION_MODEL_ID": "us.amazon.nova-lite-v1:0",
             "TABLE_DETECTION_ENABLED": "true",
         }
