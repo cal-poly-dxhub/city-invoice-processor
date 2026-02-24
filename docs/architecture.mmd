@@ -1,0 +1,131 @@
+graph TB
+    subgraph "User"
+        Browser["Browser"]
+    end
+
+    subgraph "Content Delivery"
+        CF["CloudFront Distribution"]
+    end
+
+    subgraph "Static Hosting"
+        FrontendBucket["S3 Bucket<br/>(Frontend Assets)"]
+        SpaRewrite["CloudFront Function<br/>(SPA Rewrite)"]
+    end
+
+    subgraph "API Layer"
+        APIGW["API Gateway<br/>(REST API)"]
+    end
+
+    subgraph "API Lambdas"
+        UploadStart["UploadStart<br/>POST /api/upload/start"]
+        JobStatus["JobStatus<br/>GET /api/jobs/{id}/status"]
+        ListJobs["ListJobs<br/>GET /api/jobs"]
+        UpdateJob["UpdateJob<br/>PATCH /api/jobs/{id}"]
+        SaveEdits["SaveEdits<br/>PUT /api/jobs/{id}/edits"]
+        LoadEdits["LoadEdits<br/>GET /api/jobs/{id}/edits"]
+        MatchSubItem["MatchSubItem<br/>POST /api/jobs/{id}/sub-items/match"]
+        ClassifyFilename["ClassifyFilename<br/>POST /api/classify-filenames"]
+    end
+
+    subgraph "Storage"
+        DataBucket["S3 Bucket<br/>(Data: uploads/ + jobs/)"]
+        DynamoDB["DynamoDB<br/>(Cache Table)"]
+    end
+
+    subgraph "Event-Driven Trigger"
+        EB["EventBridge Rule<br/>(suffix: /invoice.csv)"]
+    end
+
+    subgraph "Processing Pipeline (Step Functions)"
+        direction TB
+        SM["State Machine<br/>(1h timeout)"]
+        ParseCSV["ParseCSV Lambda"]
+        DiscoverPDFs["DiscoverPDFs Lambda"]
+        MapPDFs["Map State<br/>(max concurrency: 5)"]
+        IndexDoc["IndexDocument Lambda<br/>(Docker / PyMuPDF)"]
+        Assemble["AssembleAndMatch Lambda"]
+    end
+
+    subgraph "AI / ML Services"
+        Bedrock["Amazon Bedrock<br/>(Claude Sonnet 4.5 — entities)<br/>(Nova Lite — vision/classify)"]
+        Textract["Amazon Textract<br/>(OCR fallback)"]
+    end
+
+    subgraph "Supporting Lambdas (invoked by IndexDocument)"
+        ResolvePage["ResolvePage Lambda"]
+        ExtractEntities["ExtractEntities Lambda"]
+    end
+
+    subgraph "Logging"
+        CWLogs["CloudWatch Logs"]
+    end
+
+    %% User → CloudFront
+    Browser -->|HTTPS| CF
+
+    %% CloudFront routing
+    CF -->|"default (/*)"| SpaRewrite --> FrontendBucket
+    CF -->|"/jobs/*, /uploads/*"| DataBucket
+    CF -->|"/api/*"| APIGW
+
+    %% API Gateway → Lambdas
+    APIGW --> UploadStart
+    APIGW --> JobStatus
+    APIGW --> ListJobs
+    APIGW --> UpdateJob
+    APIGW --> SaveEdits
+    APIGW --> LoadEdits
+    APIGW --> MatchSubItem
+    APIGW --> ClassifyFilename
+
+    %% API Lambda → Storage
+    UploadStart -->|presigned URLs| DataBucket
+    UploadStart --> DynamoDB
+    JobStatus -->|describe execution| SM
+    ListJobs --> DynamoDB
+    UpdateJob --> DynamoDB
+    SaveEdits --> DataBucket
+    LoadEdits --> DataBucket
+    MatchSubItem --> DataBucket
+    ClassifyFilename --> Bedrock
+
+    %% S3 upload triggers EventBridge
+    DataBucket -->|"PutObject (invoice.csv)"| EB
+    EB -->|start execution| SM
+
+    %% Step Functions pipeline
+    SM --> ParseCSV
+    ParseCSV --> DiscoverPDFs
+    DiscoverPDFs --> MapPDFs
+    MapPDFs --> IndexDoc
+    IndexDoc --> Assemble
+
+    %% Pipeline Lambda → Storage
+    ParseCSV --> DataBucket
+    ParseCSV --> DynamoDB
+    DiscoverPDFs --> DataBucket
+    IndexDoc --> DataBucket
+    IndexDoc --> DynamoDB
+    Assemble --> DataBucket
+    Assemble --> DynamoDB
+
+    %% IndexDocument → Supporting Lambdas
+    IndexDoc -->|invoke| ResolvePage
+    IndexDoc -->|invoke| ExtractEntities
+
+    %% Supporting Lambdas → AI services
+    ResolvePage --> Bedrock
+    ResolvePage --> Textract
+    ExtractEntities --> Bedrock
+
+    %% Logging
+    ParseCSV -.-> CWLogs
+    DiscoverPDFs -.-> CWLogs
+    IndexDoc -.-> CWLogs
+    Assemble -.-> CWLogs
+    ResolvePage -.-> CWLogs
+    ExtractEntities -.-> CWLogs
+    SM -.->|ERROR level| CWLogs
+
+    %% Assemble writes final output
+    Assemble -->|"reconciliation.json"| DataBucket
