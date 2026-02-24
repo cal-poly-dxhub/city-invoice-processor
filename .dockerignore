@@ -1,0 +1,11 @@
+cdk.out
+.git
+node_modules
+venv
+.venv
+frontend/dist
+test-files
+*.pyc
+__pycache__
+.DS_Store
+*.sqlite

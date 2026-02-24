@@ -59,6 +59,13 @@ def invoke_resolve_page(fn_arn: str, page_data: dict) -> dict:
         ).decode("ascii")
         del payload["page_data"]["png_bytes"]
 
+    # Serialize Pydantic TableStructure objects to dicts for JSON transport
+    tables = payload["page_data"].get("pymupdf_tables")
+    if tables:
+        payload["page_data"]["pymupdf_tables"] = [
+            t.model_dump() if hasattr(t, "model_dump") else t for t in tables
+        ]
+
     resp = get_lambda_client().invoke(
         FunctionName=fn_arn,
         InvocationType="RequestResponse",
@@ -229,6 +236,14 @@ def lambda_handler(event, context):
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = {}
             for pd in pages_needing_entities:
+                tables_raw = pd.get("tables")
+                if tables_raw:
+                    tables_serialized = [
+                        t.model_dump() if hasattr(t, "model_dump") else t
+                        for t in tables_raw
+                    ]
+                else:
+                    tables_serialized = tables_raw
                 payload = {
                     "doc_id": doc_id,
                     "budget_item": budget_item,
@@ -236,7 +251,7 @@ def lambda_handler(event, context):
                     "text": pd["text"],
                     "text_source": pd["text_source"],
                     "word_boxes": pd.get("word_boxes", []),
-                    "tables": pd.get("tables"),
+                    "tables": tables_serialized,
                 }
                 future = pool.submit(
                     invoke_extract_entities, extract_entities_fn_arn, payload

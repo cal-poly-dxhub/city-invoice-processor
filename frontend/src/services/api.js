@@ -45,6 +45,16 @@ export async function matchSubItem(jobId, params) {
   })
 }
 
+/**
+ * Classify unrecognized PDF filenames via Bedrock Nova Lite LLM.
+ *
+ * @param {string[]} filenames - List of PDF filenames to classify
+ * @returns {Promise<{assignments: Object<string, string|null>}>}
+ */
+export async function classifyFilenames(filenames) {
+  return _post('/api/classify-filenames', { filenames })
+}
+
 // ---------------------------------------------------------------------------
 // Internal
 // ---------------------------------------------------------------------------

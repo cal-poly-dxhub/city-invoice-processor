@@ -44,6 +44,7 @@ class ProcessingStack(Stack):
             "MIN_CANDIDATE_SCORE": "0.1",
             "BEDROCK_MODEL_ID": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
             "BEDROCK_VISION_MODEL_ID": "us.amazon.nova-lite-v1:0",
+            "TABLE_DETECTION_ENABLED": "true",
         }
 
         # Shared Lambda layer with backend code + shared utilities
@@ -485,6 +486,31 @@ class ProcessingStack(Stack):
             apigw.LambdaIntegration(match_sub_item_fn),
         )
 
+        # POST /api/classify-filenames — LLM classification of unrecognized PDFs
+        classify_filename_fn = _lambda.Function(
+            self,
+            "ClassifyFilenameFn",
+            runtime=_lambda.Runtime.PYTHON_3_13,
+            handler="index.handler",
+            code=_lambda.Code.from_inline(self._classify_filename_code()),
+            environment={
+                "BEDROCK_MODEL_ID": "us.amazon.nova-lite-v1:0",
+                "AWS_REGION_OVERRIDE": "us-west-2",
+            },
+            timeout=Duration.seconds(30),
+            log_retention=logs.RetentionDays.TWO_WEEKS,
+        )
+        classify_filename_fn.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["bedrock:InvokeModel"],
+                resources=["*"],
+            )
+        )
+        api_resource.add_resource("classify-filenames").add_method(
+            "POST",
+            apigw.LambdaIntegration(classify_filename_fn),
+        )
+
         self.api_url = api.url
         self.api_rest_api_id = api.rest_api_id
         self.api_stage_name = api.deployment_stage.stage_name
@@ -805,3 +831,102 @@ def handler(event, context):
         "body": body,
     }
 """
+
+    @staticmethod
+    def _classify_filename_code() -> str:
+        """Inline code for LLM-based filename classification Lambda."""
+        return '''
+import json
+import logging
+import os
+
+import boto3
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+BUDGET_ITEMS = [
+    "Salary", "Fringe", "Contractual Service", "Equipment", "Insurance",
+    "Travel and Conferences", "Space Rental/Occupancy Costs",
+    "Telecommunications", "Utilities", "Supplies", "Other", "Indirect Costs",
+]
+VALID_SET = set(BUDGET_ITEMS)
+
+REGION = os.environ.get("AWS_REGION_OVERRIDE", os.environ.get("AWS_REGION", "us-west-2"))
+MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "us.amazon.nova-lite-v1:0")
+
+bedrock = boto3.client("bedrock-runtime", region_name=REGION)
+
+def handler(event, context):
+    body = json.loads(event.get("body", "{}"))
+    filenames = body.get("filenames", [])
+
+    if not filenames:
+        return _response(200, {"assignments": {}})
+
+    budget_list = "\\n".join(f"- {item}" for item in BUDGET_ITEMS)
+    file_list = "\\n".join(f"- {fn}" for fn in filenames)
+
+    system_prompt = (
+        "You are a file classification assistant. You must assign PDF filenames "
+        "to one of these budget item categories:\\n\\n"
+        f"{budget_list}\\n\\n"
+        "Rules:\\n"
+        "- Return ONLY a JSON object mapping each filename to its budget item "
+        "category, or null if you cannot determine the category.\\n"
+        "- Use the EXACT budget item names listed above.\\n"
+        "- Match based on the semantic meaning of the filename, ignoring "
+        "numbers, dates, and reference codes.\\n"
+        "- If a filename clearly relates to a budget item (even with "
+        "variations like plurals, abbreviations, or extra words), assign it.\\n"
+        "- If the filename is truly ambiguous, return null.\\n"
+        "- Return ONLY the JSON object, no other text."
+    )
+
+    user_msg = (
+        f"Classify these PDF filenames:\\n\\n{file_list}\\n\\n"
+        "Return a JSON object like: "
+        '{"filename1.pdf": "Budget Item", "filename2.pdf": null}'
+    )
+
+    try:
+        response = bedrock.converse(
+            modelId=MODEL_ID,
+            system=[{"text": system_prompt}],
+            messages=[{"role": "user", "content": [{"text": user_msg}]}],
+            inferenceConfig={"maxTokens": 1000, "temperature": 0.0},
+        )
+
+        result_text = response["output"]["message"]["content"][0]["text"].strip()
+
+        # Strip markdown code fences if present
+        if result_text.startswith("```"):
+            result_text = result_text.split("\\n", 1)[1]
+            result_text = result_text.rsplit("```", 1)[0]
+
+        raw = json.loads(result_text)
+
+        # Validate: only keep assignments that map to valid budget items
+        assignments = {}
+        for fn in filenames:
+            val = raw.get(fn)
+            assignments[fn] = val if val in VALID_SET else None
+
+        logger.info("Classified %d files: %s", len(filenames), assignments)
+        return _response(200, {"assignments": assignments})
+
+    except Exception as e:
+        logger.error("Bedrock classify error: %s", e)
+        return _response(200, {"assignments": {fn: None for fn in filenames}})
+
+
+def _response(status_code, body):
+    return {
+        "statusCode": status_code,
+        "headers": {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+        },
+        "body": json.dumps(body),
+    }
+'''

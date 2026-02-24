@@ -165,4 +165,43 @@ describe('classifyFile', () => {
       expect(classifyFile(makeFile('supply_chain.pdf'))).toBeNull();
     });
   });
+
+  describe('slug aliases', () => {
+    it('matches plural "Contractual Services" to Contractual Service', () => {
+      expect(classifyFile(makeFile('Contractual Services.pdf'))).toBe('Contractual Service');
+    });
+
+    it('matches "Contractual Services" with suffix via prefix match', () => {
+      expect(classifyFile(makeFile('Contractual Services_246344-25_Nov2025.pdf'))).toBe('Contractual Service');
+    });
+
+    it('matches "Indirect Cost" (singular) to Indirect Costs', () => {
+      expect(classifyFile(makeFile('Indirect_Cost.pdf'))).toBe('Indirect Costs');
+    });
+
+    it('matches "Telecom" abbreviation to Telecommunications', () => {
+      expect(classifyFile(makeFile('Telecom.pdf'))).toBe('Telecommunications');
+    });
+
+    it('matches "Telecom" with suffix via prefix match', () => {
+      expect(classifyFile(makeFile('Telecom_Q3_2025.pdf'))).toBe('Telecommunications');
+    });
+
+    it('matches "Space Rental" shorthand to Space Rental/Occupancy Costs', () => {
+      expect(classifyFile(makeFile('Space_Rental.pdf'))).toBe('Space Rental/Occupancy Costs');
+    });
+
+    it('matches "Occupancy Costs" shorthand to Space Rental/Occupancy Costs', () => {
+      expect(classifyFile(makeFile('Occupancy_Costs.pdf'))).toBe('Space Rental/Occupancy Costs');
+    });
+
+    it('matches "Travel Conferences" shorthand to Travel and Conferences', () => {
+      expect(classifyFile(makeFile('Travel_Conferences.pdf'))).toBe('Travel and Conferences');
+    });
+
+    it('still prefers canonical exact match over alias', () => {
+      // "contractual_service.pdf" should match via canonical, not alias
+      expect(classifyFile(makeFile('Contractual_Service.pdf'))).toBe('Contractual Service');
+    });
+  });
 });

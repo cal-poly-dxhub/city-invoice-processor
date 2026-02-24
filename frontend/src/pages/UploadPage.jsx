@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useDropzone } from 'react-dropzone'
 import { API_BASE } from '../config'
 import { BUDGET_ITEMS, slugify, classifyFile } from '../utils/budgetItemClassifier'
+import { classifyFilenames } from '../services/api'
 import UnassignedFilesModal from '../components/UnassignedFilesModal'
 import './UploadPage.css'
 
@@ -15,6 +16,7 @@ function UploadPage() {
   const [uploadProgress, setUploadProgress] = useState('')
   const [uploadError, setUploadError] = useState(null)
   const [unassignedFiles, setUnassignedFiles] = useState(null)
+  const [classifyingFiles, setClassifyingFiles] = useState(false)
 
   const handleCsvChange = (e) => {
     const file = e.target.files[0]
@@ -26,7 +28,21 @@ function UploadPage() {
     }
   }
 
-  const processNewFiles = (acceptedFiles) => {
+  const addClassifiedFiles = (fileItems) => {
+    setPdfFiles(prev => {
+      const next = { ...prev }
+      for (const { file, budgetItem } of fileItems) {
+        const existing = next[budgetItem] || []
+        const existingKeys = new Set(existing.map(f => `${f.name}__${f.size}`))
+        if (!existingKeys.has(`${file.name}__${file.size}`)) {
+          next[budgetItem] = [...existing, file]
+        }
+      }
+      return next
+    })
+  }
+
+  const processNewFiles = async (acceptedFiles) => {
     const pdfs = acceptedFiles.filter(f => f.name.toLowerCase().endsWith('.pdf'))
     if (pdfs.length === 0) return
 
@@ -42,24 +58,44 @@ function UploadPage() {
       }
     }
 
-    // Add classified files to state immediately (deduplicate by name+size)
+    // Add slug-matched files to state immediately
     if (classified.length > 0) {
-      setPdfFiles(prev => {
-        const next = { ...prev }
-        for (const { file, budgetItem } of classified) {
-          const existing = next[budgetItem] || []
-          const existingKeys = new Set(existing.map(f => `${f.name}__${f.size}`))
-          if (!existingKeys.has(`${file.name}__${file.size}`)) {
-            next[budgetItem] = [...existing, file]
-          }
-        }
-        return next
-      })
+      addClassifiedFiles(classified)
     }
 
-    // Show modal for unclassified files
+    // Try LLM classification for unmatched files
     if (unclassified.length > 0) {
-      setUnassignedFiles(unclassified)
+      setClassifyingFiles(true)
+      try {
+        const { assignments } = await classifyFilenames(
+          unclassified.map(f => f.name)
+        )
+
+        const llmClassified = []
+        const stillUnclassified = []
+
+        for (const file of unclassified) {
+          const budgetItem = assignments[file.name]
+          if (budgetItem) {
+            llmClassified.push({ file, budgetItem })
+          } else {
+            stillUnclassified.push(file)
+          }
+        }
+
+        if (llmClassified.length > 0) {
+          addClassifiedFiles(llmClassified)
+        }
+
+        if (stillUnclassified.length > 0) {
+          setUnassignedFiles(stillUnclassified)
+        }
+      } catch (err) {
+        console.error('LLM classification failed, falling back to manual:', err)
+        setUnassignedFiles(unclassified)
+      } finally {
+        setClassifyingFiles(false)
+      }
     }
   }
 
@@ -200,7 +236,7 @@ function UploadPage() {
     onDrop: processNewFiles,
     accept: { 'application/pdf': ['.pdf'] },
     multiple: true,
-    disabled: uploading || !!unassignedFiles,
+    disabled: uploading || !!unassignedFiles || classifyingFiles,
     noClick: false,
   })
 
@@ -236,6 +272,12 @@ function UploadPage() {
       {uploadError && (
         <div className="upload-error-bar">
           <span>Error: {uploadError}</span>
+        </div>
+      )}
+
+      {classifyingFiles && (
+        <div className="upload-progress-bar">
+          <span>Classifying files with AI...</span>
         </div>
       )}
 

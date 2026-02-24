@@ -22,6 +22,19 @@ export const BUDGET_ITEMS = [
 ];
 
 /**
+ * Slug aliases for common naming variations (plurals, abbreviations, etc.)
+ * that map to canonical budget item names.
+ */
+const SLUG_ALIASES = {
+  contractual_services: 'Contractual Service',
+  indirect_cost: 'Indirect Costs',
+  telecom: 'Telecommunications',
+  space_rental: 'Space Rental/Occupancy Costs',
+  occupancy_costs: 'Space Rental/Occupancy Costs',
+  travel_conferences: 'Travel and Conferences',
+};
+
+/**
  * Convert text to a slug for matching.
  *
  * Rules:
@@ -49,6 +62,10 @@ export function slugify(text) {
  */
 function buildSlugMap() {
   const entries = BUDGET_ITEMS.map((item) => [slugify(item), item]);
+  // Add aliases for common naming variations
+  for (const [alias, item] of Object.entries(SLUG_ALIASES)) {
+    entries.push([alias, item]);
+  }
   // Sort longest slug first so prefix matching is most specific
   entries.sort((a, b) => b[0].length - a[0].length);
   return entries;

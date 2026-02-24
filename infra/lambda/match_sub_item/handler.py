@@ -57,10 +57,11 @@ def lambda_handler(event, context):
 
 def handle_auto_extract(job_id, body):
     """
-    Propose sub-items from table row amounts on a specific page.
+    Propose sub-items from amounts on a specific page.
 
-    Reads the stored page data, filters amounts by budget_item and source == "table_row",
-    and returns proposed sub-items.
+    Reads the stored page data and filters amounts matching the budget item.
+    Prefers amounts with source == "table_row" (explicit table structure), but
+    falls back to all matching amounts when table detection was not enabled.
     """
     doc_id = body.get("doc_id")
     budget_item = body.get("budget_item")
@@ -81,18 +82,24 @@ def handle_auto_extract(job_id, body):
     if not amounts:
         return _success({"proposed_sub_items": []})
 
-    # Filter to amounts matching the parent's budget item from table rows
+    # Filter to amounts matching the parent's budget item.
+    # Prefer table_row amounts (have explicit table structure), but fall back
+    # to ALL amounts matching the budget item when no table structures were
+    # extracted (e.g., TABLE_DETECTION_ENABLED=false, or PyMuPDF-only pages).
     budget_slug = get_budget_item_slug(budget_item)
-    matching_amounts = []
+    table_row_amounts = []
+    all_budget_amounts = []
     for amount_obj in amounts:
         amount_budget = amount_obj.get("budget_item", "")
         amount_source = amount_obj.get("source", "")
 
-        # Match by budget item name or slug
-        if amount_source == "table_row" and _budget_items_match(
-            amount_budget, budget_item, budget_slug
-        ):
-            matching_amounts.append(amount_obj)
+        if _budget_items_match(amount_budget, budget_item, budget_slug):
+            all_budget_amounts.append(amount_obj)
+            if amount_source == "table_row":
+                table_row_amounts.append(amount_obj)
+
+    # Use table_row amounts if available, otherwise fall back to all matching
+    matching_amounts = table_row_amounts if table_row_amounts else all_budget_amounts
 
     # Build proposed sub-items
     proposed = []
@@ -113,9 +120,10 @@ def handle_auto_extract(job_id, body):
             "raw_amount": amount_obj.get("raw", ""),
         })
 
+    source_type = "table_row" if table_row_amounts else "all"
     logger.info(
         f"AutoExtract: {len(matching_amounts)} amounts matching {budget_item} "
-        f"out of {len(amounts)} total on page {source_page}"
+        f"(source={source_type}) out of {len(amounts)} total on page {source_page}"
     )
 
     return _success({"proposed_sub_items": proposed})
@@ -185,7 +193,12 @@ def handle_match(job_id, body):
 
 
 def _load_single_page(job_id, doc_id, page_number):
-    """Load page data JSON for a single page, searching across physical doc_ids."""
+    """Load page data JSON for a single virtual page, resolving across physical doc_ids.
+
+    For multi-file documents, virtual page numbers differ from local page numbers.
+    Physical docs are sorted alphabetically and concatenated with cumulative offsets.
+    Virtual page N maps to local page (N - offset) within the correct physical doc.
+    """
     budget_slug = get_budget_item_slug(doc_id) if doc_id else doc_id
 
     # Try direct path first (flat file case: doc_id is the budget slug)
@@ -195,18 +208,28 @@ def _load_single_page(job_id, doc_id, page_number):
     except Exception:
         pass
 
-    # For virtual documents (subdirectories), search physical doc_ids.
-    # Page data is stored under physical doc_ids (e.g., telecommunications__phone_bill_q1).
-    # We need to find which physical doc has this virtual page number.
-    # Virtual pages are assembled with offsets, so we need to reconstruct.
+    # For virtual documents (subdirectories), reconstruct virtual→local page mapping.
+    # Page data is stored under physical doc_ids with local page numbers.
+    # Virtual pages are assembled by concatenating physical docs in sorted order.
     all_doc_ids = _find_doc_ids_for_budget(job_id, budget_slug)
-    for phys_doc_id in all_doc_ids:
-        try:
-            return download_json(
-                f"jobs/{job_id}/page_data/{phys_doc_id}/{page_number}.json"
-            )
-        except Exception:
-            continue
+
+    offset = 0
+    for phys_doc_id in sorted(all_doc_ids):
+        prefix = f"jobs/{job_id}/page_data/{phys_doc_id}/"
+        page_keys = list_keys(prefix, suffix=".json")
+        page_count = len(page_keys)
+
+        # Virtual pages for this doc: [offset+1, offset+page_count]
+        if offset < page_number <= offset + page_count:
+            local_page = page_number - offset
+            try:
+                return download_json(
+                    f"jobs/{job_id}/page_data/{phys_doc_id}/{local_page}.json"
+                )
+            except Exception:
+                pass
+
+        offset += page_count
 
     return None
 
@@ -283,14 +306,25 @@ def _find_doc_ids_for_budget(job_id, budget_slug):
 
 
 def _budget_items_match(amount_budget, parent_budget, parent_slug):
-    """Check if an amount's budget_item matches the parent line item's budget item."""
+    """Check if an amount's budget_item matches the parent line item's budget item.
+
+    Handles several formats for amount_budget:
+    - Canonical name: "Telecommunications"
+    - Budget slug: "telecommunications"
+    - Physical doc_id (subdirectory): "telecommunications__phone_bill_q1"
+    """
     if not amount_budget:
         return False
-    # Exact name match
+    # Exact name match (case-insensitive)
     if amount_budget.lower() == parent_budget.lower():
         return True
     # Slug match
-    if get_budget_item_slug(amount_budget) == parent_slug:
+    amount_slug = get_budget_item_slug(amount_budget)
+    if amount_slug == parent_slug:
+        return True
+    # Physical doc_id match: check the raw string (lowercased), NOT the slug.
+    # slugify() collapses "__" to "_", breaking the "budget_slug__filename" pattern.
+    if amount_budget.lower().startswith(f"{parent_slug}__"):
         return True
     return False
 
