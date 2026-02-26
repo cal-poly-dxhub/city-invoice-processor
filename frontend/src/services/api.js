@@ -5,6 +5,7 @@
  */
 
 import { API_BASE } from '../config'
+import { authFetch } from './authenticatedFetch'
 
 /**
  * Auto-extract proposed sub-items from table rows on a general ledger page.
@@ -60,7 +61,7 @@ export async function classifyFilenames(filenames) {
 // ---------------------------------------------------------------------------
 
 async function _post(path, body, method = 'POST') {
-  const resp = await fetch(`${API_BASE}${path}`, {
+  const resp = await authFetch(`${API_BASE}${path}`, {
     method,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),

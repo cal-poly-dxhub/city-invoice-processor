@@ -20,8 +20,11 @@ from aws_cdk import (
     Stack,
     aws_cloudfront as cloudfront,
     aws_cloudfront_origins as origins,
+    aws_cognito as cognito,
+    aws_iam as iam,
     aws_s3 as s3,
     aws_s3_deployment as s3deploy,
+    custom_resources as cr,
 )
 from constructs import Construct
 
@@ -42,6 +45,9 @@ class FrontendStack(Stack):
         api_url: str,
         api_rest_api_id: str,
         api_stage_name: str,
+        user_pool: cognito.IUserPool,
+        user_pool_client: cognito.UserPoolClient,
+        user_pool_domain_prefix: str,
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -153,6 +159,59 @@ class FrontendStack(Stack):
             },
         )
 
+        # --- Cognito: Update callback URLs with real CloudFront URL ---
+        # The User Pool Client is initially created with placeholder callback
+        # URLs.  Now that the CloudFront distribution exists, update the
+        # client with the real URLs.
+        cloudfront_url = Fn.join("", [
+            "https://", distribution.distribution_domain_name, "/"
+        ])
+
+        cr.AwsCustomResource(
+            self,
+            "UpdateCognitoCallbackUrls",
+            on_create=cr.AwsSdkCall(
+                service="CognitoIdentityServiceProvider",
+                action="updateUserPoolClient",
+                parameters={
+                    "UserPoolId": user_pool.user_pool_id,
+                    "ClientId": user_pool_client.user_pool_client_id,
+                    "SupportedIdentityProviders": ["COGNITO"],
+                    "AllowedOAuthFlows": ["code"],
+                    "AllowedOAuthScopes": ["openid", "email", "profile"],
+                    "AllowedOAuthFlowsUserPoolClient": True,
+                    "CallbackURLs": [cloudfront_url, "http://localhost:3000/"],
+                    "LogoutURLs": [cloudfront_url, "http://localhost:3000/"],
+                },
+                physical_resource_id=cr.PhysicalResourceId.of(
+                    "CognitoCallbackUrlUpdate"
+                ),
+            ),
+            on_update=cr.AwsSdkCall(
+                service="CognitoIdentityServiceProvider",
+                action="updateUserPoolClient",
+                parameters={
+                    "UserPoolId": user_pool.user_pool_id,
+                    "ClientId": user_pool_client.user_pool_client_id,
+                    "SupportedIdentityProviders": ["COGNITO"],
+                    "AllowedOAuthFlows": ["code"],
+                    "AllowedOAuthScopes": ["openid", "email", "profile"],
+                    "AllowedOAuthFlowsUserPoolClient": True,
+                    "CallbackURLs": [cloudfront_url, "http://localhost:3000/"],
+                    "LogoutURLs": [cloudfront_url, "http://localhost:3000/"],
+                },
+                physical_resource_id=cr.PhysicalResourceId.of(
+                    "CognitoCallbackUrlUpdate"
+                ),
+            ),
+            policy=cr.AwsCustomResourcePolicy.from_statements([
+                iam.PolicyStatement(
+                    actions=["cognito-idp:UpdateUserPoolClient"],
+                    resources=[user_pool.user_pool_arn],
+                ),
+            ]),
+        )
+
         # --- Build and deploy frontend to S3 ---
         frontend_root = PROJECT_ROOT / "frontend"
         frontend_dist = frontend_root / "dist"
@@ -171,11 +230,38 @@ class FrontendStack(Stack):
                 env={**os.environ, "VITE_ENVIRONMENT": "production"},
             )
 
+        # Deploy frontend assets + runtime auth config to S3
+        deploy_sources = []
         if frontend_dist.exists():
+            deploy_sources.append(s3deploy.Source.asset(str(frontend_dist)))
+
+        # Runtime auth config — loaded by the frontend at startup instead of
+        # baking Cognito values into the Vite build (avoids circular dependency
+        # between CloudFront URL and Cognito callback URLs).
+        cognito_domain = Fn.join("", [
+            user_pool_domain_prefix,
+            ".auth.",
+            self.region,
+            ".amazoncognito.com",
+        ])
+        auth_config_json = Fn.join("", [
+            '{"userPoolId":"', user_pool.user_pool_id,
+            '","userPoolClientId":"', user_pool_client.user_pool_client_id,
+            '","domain":"', cognito_domain,
+            '","region":"', self.region,
+            '","redirectSignIn":"', cloudfront_url,
+            '","redirectSignOut":"', cloudfront_url,
+            '"}',
+        ])
+        deploy_sources.append(
+            s3deploy.Source.data("auth-config.json", auth_config_json)
+        )
+
+        if deploy_sources:
             s3deploy.BucketDeployment(
                 self,
                 "DeployFrontend",
-                sources=[s3deploy.Source.asset(str(frontend_dist))],
+                sources=deploy_sources,
                 destination_bucket=frontend_bucket,
                 distribution=distribution,
                 distribution_paths=["/*"],

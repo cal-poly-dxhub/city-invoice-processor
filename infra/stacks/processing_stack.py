@@ -4,6 +4,7 @@ from pathlib import Path
 
 from aws_cdk import Duration, Stack
 from aws_cdk import aws_apigateway as apigw
+from aws_cdk import aws_cognito as cognito
 from aws_cdk import aws_dynamodb as dynamodb
 from aws_cdk import aws_events as events
 from aws_cdk import aws_events_targets as targets
@@ -29,6 +30,7 @@ class ProcessingStack(Stack):
         *,
         data_bucket: s3.IBucket,
         cache_table: dynamodb.ITable,
+        user_pool: cognito.IUserPool,
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -369,7 +371,22 @@ class ProcessingStack(Stack):
             default_cors_preflight_options=apigw.CorsOptions(
                 allow_origins=apigw.Cors.ALL_ORIGINS,
                 allow_methods=apigw.Cors.ALL_METHODS,
+                allow_headers=[
+                    "Content-Type",
+                    "Authorization",
+                    "X-Amz-Date",
+                    "X-Api-Key",
+                    "X-Amz-Security-Token",
+                ],
             ),
+        )
+
+        # --- Cognito authorizer for all API endpoints ---
+        cognito_authorizer = apigw.CognitoUserPoolsAuthorizer(
+            self,
+            "CognitoAuthorizer",
+            cognito_user_pools=[user_pool],
+            authorizer_name="InvoiceProcessorAuth",
         )
 
         # POST /api/upload/start — returns presigned URLs
@@ -394,6 +411,8 @@ class ProcessingStack(Stack):
         api_upload.add_resource("start").add_method(
             "POST",
             apigw.LambdaIntegration(upload_start_fn),
+            authorizer=cognito_authorizer,
+            authorization_type=apigw.AuthorizationType.COGNITO,
         )
 
         # GET /api/jobs/{jobId}/status — check Step Functions status
@@ -415,6 +434,8 @@ class ProcessingStack(Stack):
         api_job.add_resource("status").add_method(
             "GET",
             apigw.LambdaIntegration(job_status_fn),
+            authorizer=cognito_authorizer,
+            authorization_type=apigw.AuthorizationType.COGNITO,
         )
 
         # GET /api/jobs — list all jobs
@@ -430,7 +451,12 @@ class ProcessingStack(Stack):
             timeout=Duration.seconds(10),
         )
         cache_table.grant_read_data(list_jobs_fn)
-        api_jobs.add_method("GET", apigw.LambdaIntegration(list_jobs_fn))
+        api_jobs.add_method(
+            "GET",
+            apigw.LambdaIntegration(list_jobs_fn),
+            authorizer=cognito_authorizer,
+            authorization_type=apigw.AuthorizationType.COGNITO,
+        )
 
         # PATCH /api/jobs/{jobId} — rename a job
         update_job_fn = _lambda.Function(
@@ -445,7 +471,12 @@ class ProcessingStack(Stack):
             timeout=Duration.seconds(10),
         )
         cache_table.grant_read_write_data(update_job_fn)
-        api_job.add_method("PATCH", apigw.LambdaIntegration(update_job_fn))
+        api_job.add_method(
+            "PATCH",
+            apigw.LambdaIntegration(update_job_fn),
+            authorizer=cognito_authorizer,
+            authorization_type=apigw.AuthorizationType.COGNITO,
+        )
 
         # PUT /api/jobs/{jobId}/edits — save user edits to S3
         save_edits_fn = _lambda.Function(
@@ -476,14 +507,26 @@ class ProcessingStack(Stack):
         data_bucket.grant_read(load_edits_fn)
 
         api_edits = api_job.add_resource("edits")
-        api_edits.add_method("PUT", apigw.LambdaIntegration(save_edits_fn))
-        api_edits.add_method("GET", apigw.LambdaIntegration(load_edits_fn))
+        api_edits.add_method(
+            "PUT",
+            apigw.LambdaIntegration(save_edits_fn),
+            authorizer=cognito_authorizer,
+            authorization_type=apigw.AuthorizationType.COGNITO,
+        )
+        api_edits.add_method(
+            "GET",
+            apigw.LambdaIntegration(load_edits_fn),
+            authorizer=cognito_authorizer,
+            authorization_type=apigw.AuthorizationType.COGNITO,
+        )
 
         # POST /api/jobs/{jobId}/sub-items/match — auto-extract or match sub-items
         api_sub_items = api_job.add_resource("sub-items")
         api_sub_items.add_resource("match").add_method(
             "POST",
             apigw.LambdaIntegration(match_sub_item_fn),
+            authorizer=cognito_authorizer,
+            authorization_type=apigw.AuthorizationType.COGNITO,
         )
 
         # POST /api/classify-filenames — LLM classification of unrecognized PDFs
@@ -509,6 +552,8 @@ class ProcessingStack(Stack):
         api_resource.add_resource("classify-filenames").add_method(
             "POST",
             apigw.LambdaIntegration(classify_filename_fn),
+            authorizer=cognito_authorizer,
+            authorization_type=apigw.AuthorizationType.COGNITO,
         )
 
         self.api_url = api.url

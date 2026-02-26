@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useDropzone } from 'react-dropzone'
 import { API_BASE } from '../config'
+import { authFetch } from '../services/authenticatedFetch'
 import { BUDGET_ITEMS, slugify, classifyFile } from '../utils/budgetItemClassifier'
 import { classifyFilenames } from '../services/api'
 import UnassignedFilesModal from '../components/UnassignedFilesModal'
@@ -184,7 +185,7 @@ function UploadPage() {
       }
 
       // Step 1: Get presigned URLs from API
-      const startResp = await fetch(`${API_BASE}/api/upload/start`, {
+      const startResp = await authFetch(`${API_BASE}/api/upload/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

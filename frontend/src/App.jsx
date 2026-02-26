@@ -1,4 +1,5 @@
 import { Routes, Route, Link, useLocation } from 'react-router-dom'
+import { signOut } from './auth'
 import UploadPage from './pages/UploadPage'
 import ReviewPage from './pages/ReviewPage'
 import JobHistoryPage from './pages/JobHistoryPage'
@@ -31,6 +32,9 @@ function App() {
               Jobs
             </Link>
           </div>
+          <button className="nav-signout" onClick={() => signOut()}>
+            Sign Out
+          </button>
         </div>
       </nav>
 
