@@ -85,7 +85,7 @@ AWS_REGION=us-west-2
 AWS_PROFILE=              # Optional, if using profiles
 
 # Bedrock Model (REQUIRED)
-BEDROCK_MODEL_ID=us.anthropic.claude-sonnet-4-5-20250929-v1:0
+BEDROCK_MODEL_ID=us.anthropic.claude-haiku-4-5-20251001-v1:0
 
 # Text Extraction
 TEXT_MIN_CHARS=40         # Minimum chars for PyMuPDF to be sufficient
@@ -184,7 +184,7 @@ PDFs must be named to match budget items. The matching is **case-insensitive** a
     "job_id": "job_001",
     "created_at": "2025-01-19T12:00:00Z",
     "aws_region": "us-west-2",
-    "bedrock_model_id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "bedrock_model_id": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
     "textract_mode": "auto"
   },
   "inputs": {
@@ -320,7 +320,7 @@ MAX_WORKERS=1
 ### Missing Bedrock Model
 Ensure you're using the correct model ID for us-west-2:
 ```env
-BEDROCK_MODEL_ID=us.anthropic.claude-sonnet-4-5-20250929-v1:0
+BEDROCK_MODEL_ID=us.anthropic.claude-haiku-4-5-20251001-v1:0
 ```
 
 ### PDF Not Found

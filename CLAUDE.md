@@ -190,7 +190,7 @@ SQLite cache (`index_store.py` locally, DynamoDB in Lambda) stores: document SHA
 
 ```env
 AWS_REGION=us-west-2
-BEDROCK_MODEL_ID=us.anthropic.claude-sonnet-4-5-20250929-v1:0
+BEDROCK_MODEL_ID=us.anthropic.claude-haiku-4-5-20251001-v1:0
 TEXT_MIN_CHARS=40              # Min chars for PyMuPDF sufficiency
 TEXTRACT_MODE=auto             # auto | always | never
 TEXTRACT_MAX_LINES=300

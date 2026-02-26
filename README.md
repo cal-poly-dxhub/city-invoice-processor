@@ -137,7 +137,7 @@ cd frontend && npm test
 | Variable | Default | Description |
 |---|---|---|
 | `AWS_REGION` | `us-west-2` | AWS region for service calls |
-| `BEDROCK_MODEL_ID` | `us.anthropic.claude-sonnet-4-5-20250929-v1:0` | Claude model for entity extraction |
+| `BEDROCK_MODEL_ID` | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Claude model for entity extraction |
 | `TEXT_MIN_CHARS` | `40` | Minimum chars for PyMuPDF to be considered sufficient |
 | `TEXTRACT_MODE` | `auto` | Text extraction mode: `auto`, `always`, or `never` |
 | `TABLE_DETECTION_ENABLED` | `false` | Use Bedrock vision to pre-detect table pages |
@@ -147,7 +147,7 @@ cd frontend && npm test
 ## Architecture
 
 ### AWS Services Used
-- **Amazon Bedrock (Claude Sonnet)**: AI entity extraction from page text (names, amounts, dates, organizations)
+- **Amazon Bedrock (Claude Haiku 4.5)**: AI entity extraction from page text (names, amounts, dates, organizations)
 - **Amazon Textract**: OCR fallback for scanned PDFs and complex table extraction
 - **AWS Step Functions**: Orchestrates the multi-step processing pipeline
 - **AWS Lambda**: Serverless compute for each pipeline stage and API handlers
