@@ -9,6 +9,11 @@ describe('normalizeKeyword', () => {
   it('returns empty string for whitespace-only input', () => {
     expect(normalizeKeyword('   ')).toBe('')
   })
+
+  it('returns empty string for null/undefined input', () => {
+    expect(normalizeKeyword(null)).toBe('')
+    expect(normalizeKeyword(undefined)).toBe('')
+  })
 })
 
 describe('addKeyword', () => {
