@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { autoExtractSubItems, matchSubItem } from '../services/api'
+import { addKeyword, removeKeyword } from '../utils/keywordSync'
 import './CreateSubItemDialog.css'
 
 /**
@@ -37,6 +38,9 @@ function CreateSubItemDialog({
   const [matchedProposals, setMatchedProposals] = useState({}) // { index: { candidates, selected_evidence } }
   const [matchingAll, setMatchingAll] = useState(false)
 
+  // Keyword review state
+  const [expandedRows, setExpandedRows] = useState(new Set())
+
   // Reset state when dialog opens
   useEffect(() => {
     if (open) {
@@ -47,6 +51,7 @@ function CreateSubItemDialog({
       setProposals([])
       setMatchedProposals({})
       setError(null)
+      setExpandedRows(new Set())
       setMode(initialMode)
     }
   }, [open, initialMode])
@@ -133,6 +138,7 @@ function CreateSubItemDialog({
         label: p.label || `Item ${i + 1}`,
       }))
       setProposals(items)
+      setExpandedRows(new Set(items.map((_, i) => i)))
 
       if (items.length === 0) {
         setError(`No ${budgetItem} line items found in the table on page ${sourcePage}`)
@@ -172,6 +178,29 @@ function CreateSubItemDialog({
       prev.map((p, i) => i === idx ? { ...p, amount: val ? parseFloat(val) : null } : p)
     )
   }
+
+  const updateProposalKeywords = (idx, newKeywords) => {
+    setProposals(prev =>
+      prev.map((p, i) => i === idx ? { ...p, keywords: newKeywords, row_texts: [...newKeywords] } : p)
+    )
+    // Clear stale match results for this proposal
+    setMatchedProposals(prev => {
+      const next = { ...prev }
+      delete next[idx]
+      return next
+    })
+  }
+
+  const toggleRowExpanded = (idx) => {
+    setExpandedRows(prev => {
+      const next = new Set(prev)
+      if (next.has(idx)) next.delete(idx)
+      else next.add(idx)
+      return next
+    })
+  }
+
+  const allExpanded = proposals.length > 0 && expandedRows.size === proposals.length
 
   const handleMatchAll = async () => {
     const enabledProposals = proposals
@@ -372,12 +401,22 @@ function CreateSubItemDialog({
                     <span>
                       {enabledCount} of {proposals.length} items selected
                     </span>
-                    <button
-                      className="batch-select-btn"
-                      onClick={() => setAllEnabled(enabledCount < proposals.length)}
-                    >
-                      {enabledCount === proposals.length ? 'Deselect All' : 'Select All'}
-                    </button>
+                    <div style={{ display: 'flex', gap: '0.5rem' }}>
+                      <button
+                        className="expand-collapse-btn"
+                        onClick={() => setExpandedRows(
+                          allExpanded ? new Set() : new Set(proposals.map((_, i) => i))
+                        )}
+                      >
+                        {allExpanded ? 'Collapse All' : 'Expand All'}
+                      </button>
+                      <button
+                        className="batch-select-btn"
+                        onClick={() => setAllEnabled(enabledCount < proposals.length)}
+                      >
+                        {enabledCount === proposals.length ? 'Deselect All' : 'Select All'}
+                      </button>
+                    </div>
                   </div>
 
                   <div className="proposals-list">
@@ -386,31 +425,81 @@ function CreateSubItemDialog({
                         key={idx}
                         className={`proposal-row ${!p.enabled ? 'disabled' : ''}`}
                       >
-                        <input
-                          type="checkbox"
-                          checked={p.enabled}
-                          onChange={() => toggleProposal(idx)}
-                        />
-                        <input
-                          type="text"
-                          className="proposal-label"
-                          value={p.label}
-                          onChange={e => updateProposalLabel(idx, e.target.value)}
-                        />
-                        <input
-                          type="number"
-                          className="proposal-amount"
-                          step="0.01"
-                          value={p.amount ?? ''}
-                          onChange={e => updateProposalAmount(idx, e.target.value)}
-                        />
-                        {matchedProposals[idx] && (
-                          <span className="proposal-match-status">
-                            {matchedProposals[idx].error
-                              ? 'Error'
-                              : `${matchedProposals[idx].candidates.length} match${matchedProposals[idx].candidates.length !== 1 ? 'es' : ''}`
-                            }
-                          </span>
+                        <div className="proposal-row-inner">
+                          <input
+                            type="checkbox"
+                            checked={p.enabled}
+                            onChange={() => toggleProposal(idx)}
+                          />
+                          <input
+                            type="text"
+                            className="proposal-label"
+                            value={p.label}
+                            onChange={e => updateProposalLabel(idx, e.target.value)}
+                          />
+                          <input
+                            type="number"
+                            className="proposal-amount"
+                            step="0.01"
+                            value={p.amount ?? ''}
+                            onChange={e => updateProposalAmount(idx, e.target.value)}
+                          />
+                          <button
+                            className="proposal-expand-toggle"
+                            onClick={() => toggleRowExpanded(idx)}
+                            title={expandedRows.has(idx) ? 'Collapse keywords' : 'Expand keywords'}
+                          >
+                            {expandedRows.has(idx) ? '\u25BE' : '\u25B8'}
+                          </button>
+                          {matchedProposals[idx] && (
+                            <span className="proposal-match-status">
+                              {matchedProposals[idx].error
+                                ? 'Error'
+                                : `${matchedProposals[idx].candidates.length} match${matchedProposals[idx].candidates.length !== 1 ? 'es' : ''}`
+                              }
+                            </span>
+                          )}
+                        </div>
+
+                        {expandedRows.has(idx) && (
+                          <div className="proposal-details">
+                            <div className="proposal-keywords">
+                              <span className="proposal-keywords-label">Keywords:</span>
+                              {(p.keywords || []).map((kw, ki) => (
+                                <span key={ki} className="keyword-tag">
+                                  {kw}
+                                  <button
+                                    className="keyword-tag-remove"
+                                    onClick={() => {
+                                      const { keywords } = removeKeyword(p, kw)
+                                      updateProposalKeywords(idx, keywords)
+                                    }}
+                                    title={`Remove "${kw}"`}
+                                  >
+                                    ×
+                                  </button>
+                                </span>
+                              ))}
+                              <input
+                                type="text"
+                                className="keyword-add-input"
+                                placeholder="+ add"
+                                onKeyDown={e => {
+                                  if (e.key === 'Enter' && e.target.value.trim()) {
+                                    const { keywords } = addKeyword(p, e.target.value)
+                                    updateProposalKeywords(idx, keywords)
+                                    e.target.value = ''
+                                  }
+                                }}
+                              />
+                            </div>
+                            {p.table_row_texts && p.table_row_texts.length > 0 && (
+                              <div className="proposal-table-ref">
+                                <span className="proposal-table-ref-label">Table ref: </span>
+                                {p.table_row_texts.join(', ')}
+                              </div>
+                            )}
+                          </div>
                         )}
                       </div>
                     ))}
