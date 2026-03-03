@@ -341,15 +341,50 @@ def _associate_amounts_with_budget_items(
     for amount_obj in amounts:
         amount_text = amount_obj.get("raw", "")
 
-        # Search for amount in table cells
+        # Search for amount in table cells.
+        # Prefer cells where the amount is the sole value (exact match) over
+        # multi-value cells where it appears alongside other amounts.
+        #
+        # Two extraction methods produce multi-value cells differently:
+        #   PyMuPDF: newline-separated values in one cell (row_span=1)
+        #   Textract: cell with row_span > 1 spanning multiple rows
+        # In both cases, use the value's position to compute the actual row.
         found_location = None
+        fallback_location = None
         for table in page_tables:
             for cell in table.cells:
-                if amount_text in cell.text:
+                if amount_text not in cell.text:
+                    continue
+                cell_stripped = cell.text.strip()
+                # Exact match: cell text IS the amount (possibly with whitespace)
+                if cell_stripped == amount_text:
+                    found_location = (table.table_id, cell.row_index)
+                    break
+                # PyMuPDF multi-value cell: newline-separated values from
+                # merged rows.  Each line corresponds to the next row.
+                if "\n" in cell_stripped:
+                    lines = [ln.strip() for ln in cell_stripped.split("\n")]
+                    for line_offset, line in enumerate(lines):
+                        if amount_text in line:
+                            adjusted_row = cell.row_index + line_offset
+                            if fallback_location is None:
+                                fallback_location = (table.table_id, adjusted_row)
+                            break
+                # Textract merged cell: row_span > 1 means it covers
+                # multiple rows.  We can't determine the exact row from
+                # text alone, so use the cell's starting row as fallback.
+                elif getattr(cell, "row_span", 1) > 1:
+                    if fallback_location is None:
+                        fallback_location = (table.table_id, cell.row_index)
+                else:
+                    # Single-value cell containing extra text (e.g. "$72.00")
                     found_location = (table.table_id, cell.row_index)
                     break
             if found_location:
                 break
+
+        if not found_location:
+            found_location = fallback_location
 
         # Associate with budget item
         if found_location:
