@@ -448,6 +448,7 @@ function CreateSubItemDialog({
                             className="proposal-expand-toggle"
                             onClick={() => toggleRowExpanded(idx)}
                             title={expandedRows.has(idx) ? 'Collapse keywords' : 'Expand keywords'}
+                            aria-label={expandedRows.has(idx) ? 'Collapse keywords' : 'Expand keywords'}
                           >
                             {expandedRows.has(idx) ? '\u25BE' : '\u25B8'}
                           </button>
@@ -465,8 +466,8 @@ function CreateSubItemDialog({
                           <div className="proposal-details">
                             <div className="proposal-keywords">
                               <span className="proposal-keywords-label">Keywords:</span>
-                              {(p.keywords || []).map((kw, ki) => (
-                                <span key={ki} className="keyword-tag">
+                              {(p.keywords || []).map((kw) => (
+                                <span key={kw} className="keyword-tag">
                                   {kw}
                                   <button
                                     className="keyword-tag-remove"
@@ -475,6 +476,7 @@ function CreateSubItemDialog({
                                       updateProposalKeywords(idx, keywords)
                                     }}
                                     title={`Remove "${kw}"`}
+                                    aria-label={`Remove keyword ${kw}`}
                                   >
                                     ×
                                   </button>
@@ -484,8 +486,10 @@ function CreateSubItemDialog({
                                 type="text"
                                 className="keyword-add-input"
                                 placeholder="+ add"
+                                aria-label="Add keyword"
                                 onKeyDown={e => {
                                   if (e.key === 'Enter' && e.target.value.trim()) {
+                                    e.preventDefault()
                                     const { keywords } = addKeyword(p, e.target.value)
                                     updateProposalKeywords(idx, keywords)
                                     e.target.value = ''

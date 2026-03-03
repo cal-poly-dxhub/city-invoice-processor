@@ -282,8 +282,8 @@
 
 .proposal-row {
   display: flex;
-  align-items: center;
-  gap: 0.5rem;
+  flex-direction: column;
+  gap: 0.25rem;
   padding: 0.375rem 0.5rem;
   background: rgba(0, 0, 0, 0.02);
   border-radius: 4px;
