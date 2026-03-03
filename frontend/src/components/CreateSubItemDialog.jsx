@@ -196,6 +196,8 @@ function CreateSubItemDialog({
           keywords: kws,
           amount: proposal.amount,
           source_page: sourcePage,
+          row_texts: proposal.row_texts || [],
+          table_row_texts: proposal.table_row_texts || [],
         })
 
         results[proposal._idx] = {

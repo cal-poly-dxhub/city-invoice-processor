@@ -93,7 +93,6 @@ A page should be classified as a "table page" if:
 A page should NOT be classified as a "table page" if:
 - It's mostly prose text with occasional small tables
 - It's a form with labeled fields (not tabular data)
-- It's an invoice/receipt with line items (these are usually better handled as regular text)
 
 Respond with a JSON object containing:
 {

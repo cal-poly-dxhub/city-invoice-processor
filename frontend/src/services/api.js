@@ -28,6 +28,10 @@ export async function autoExtractSubItems(jobId, params) {
 /**
  * Run matching for a specific sub-item.
  *
+ * On 504 (API Gateway timeout), the Lambda continues processing and caches
+ * the result in S3. This function automatically polls until the result is
+ * ready, so callers don't need to handle timeouts.
+ *
  * @param {string} jobId
  * @param {object} params
  * @param {string} params.sub_item_id - Sub-item identifier (e.g., "row_51_a")
@@ -40,10 +44,40 @@ export async function autoExtractSubItems(jobId, params) {
  * @returns {Promise<{sub_item_id: string, candidates: Array, selected_evidence: object}>}
  */
 export async function matchSubItem(jobId, params) {
-  return _post(`/api/jobs/${jobId}/sub-items/match`, {
-    mode: 'match',
-    ...params,
-  })
+  const matchBody = { mode: 'match', ...params }
+
+  try {
+    return await _post(`/api/jobs/${jobId}/sub-items/match`, matchBody)
+  } catch (err) {
+    // On 504 (API Gateway timeout), the Lambda is still running and will
+    // cache the result. Poll until it's ready.
+    if (!err.message.includes('504')) throw err
+
+    console.log(`matchSubItem: 504 timeout for ${params.sub_item_id}, polling...`)
+    return _pollForResult(jobId, matchBody)
+  }
+}
+
+/**
+ * Poll for a match result after a 504 timeout.
+ * Retries the same match request (which checks S3 cache first) with backoff.
+ */
+async function _pollForResult(jobId, matchBody, maxAttempts = 20, intervalMs = 3000) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    await new Promise(r => setTimeout(r, intervalMs))
+    console.log(`matchSubItem: poll attempt ${attempt}/${maxAttempts}`)
+    try {
+      const result = await _post(`/api/jobs/${jobId}/sub-items/match`, matchBody)
+      // If we got a real result (not just "processing"), return it
+      if (result.candidates || result.selected_evidence) return result
+      if (result.status === 'processing') continue
+      return result
+    } catch (retryErr) {
+      if (retryErr.message.includes('504')) continue
+      throw retryErr
+    }
+  }
+  throw new Error('Match timed out after polling')
 }
 
 /**

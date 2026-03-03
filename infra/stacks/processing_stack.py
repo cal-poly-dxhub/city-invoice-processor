@@ -231,11 +231,11 @@ class ProcessingStack(Stack):
             ),
             layers=[backend_layer],
             environment=common_env,
-            memory_size=1024,
-            timeout=Duration.seconds(30),
+            memory_size=2048,
+            timeout=Duration.seconds(90),
             log_retention=logs.RetentionDays.TWO_WEEKS,
         )
-        data_bucket.grant_read(match_sub_item_fn)
+        data_bucket.grant_read_write(match_sub_item_fn)
 
         # --- Step Functions State Machine ---
         # State 1: ParseCSV
