@@ -157,6 +157,10 @@ function CreateSubItemDialog({
     )
   }
 
+  const setAllEnabled = (enabled) => {
+    setProposals(prev => prev.map(p => ({ ...p, enabled })))
+  }
+
   const updateProposalLabel = (idx, val) => {
     setProposals(prev =>
       prev.map((p, i) => i === idx ? { ...p, label: val } : p)
@@ -368,6 +372,12 @@ function CreateSubItemDialog({
                     <span>
                       {enabledCount} of {proposals.length} items selected
                     </span>
+                    <button
+                      className="batch-select-btn"
+                      onClick={() => setAllEnabled(enabledCount < proposals.length)}
+                    >
+                      {enabledCount === proposals.length ? 'Deselect All' : 'Select All'}
+                    </button>
                   </div>
 
                   <div className="proposals-list">

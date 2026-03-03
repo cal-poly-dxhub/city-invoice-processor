@@ -248,9 +248,28 @@
 }
 
 .proposals-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   font-family: var(--font-mono);
   font-size: 0.75rem;
   color: var(--color-text-secondary);
+}
+
+.batch-select-btn {
+  background: none;
+  border: none;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--color-accent);
+  cursor: pointer;
+  padding: 0.125rem 0.25rem;
+  border-radius: 3px;
+  font-weight: 500;
+}
+
+.batch-select-btn:hover {
+  text-decoration: underline;
 }
 
 .proposals-list {
