@@ -58,13 +58,15 @@ npm run test:watch   # vitest watch mode
 
 ### CDK / Deployment
 
+**Requires Docker** — CDK synth bundles the backend Lambda layer and builds the `index_document` Docker image. If Docker is not accessible (`permission denied ... docker.sock`), ask the user to deploy from a terminal with Docker access.
+
 ```bash
 # Full deploy (bootstraps, builds frontend, deploys all stacks)
 scripts/deploy.sh
 
 # Manual CDK commands
 cd infra
-python3 -m venv .venv && source .venv/bin/activate
+source venv/bin/activate   # Note: venv is at infra/venv/, not .venv/
 pip install -r requirements.txt
 cdk synth            # Synthesize CloudFormation (also auto-builds frontend)
 cdk deploy --all     # Deploy all stacks
@@ -162,6 +164,11 @@ Each Lambda in `infra/lambda/`:
 
 **Text source values:** `pymupdf`, `pymupdf_table`, `textract`, `textract_table`
 
+**PyMuPDF vs Textract cell formats (critical difference):**
+- **PyMuPDF** cannot detect merged cells — when rows are visually merged, it stacks all values into one cell with newline separators (`"2.68\n72.00\n20.60"`), always `row_span=1`. Each line corresponds to the next visual row.
+- **Textract** properly detects merged cells — reports `row_span > 1` but joins text with spaces, no newlines (`"2.68 72.00 20.60"`)
+- `_associate_amounts_with_budget_items()` in `bedrock_entities.py` handles both: line-offset for PyMuPDF newline cells, row_span fallback for Textract merged cells. Exact single-cell matches always take priority.
+
 ### Matching Logic (`matching.py`)
 
 **Salary/Fringe items** — Employee name matching with spatial proximity:
@@ -176,13 +183,47 @@ Each Lambda in `infra/lambda/`:
 
 **Candidate filtering:** Backend keeps all candidates scoring >= 0.1. Frontend provides a dynamic confidence slider (default 50%) for real-time filtering without re-running the pipeline.
 
+### Sub-Item Matching (`infra/lambda/match_sub_item/handler.py`)
+
+On-demand API for matching sub-items (individual vendors within a budget item GL page). Flow:
+
+1. `handle_match()` — entry point, checks S3 cache first
+2. `generate_candidates_for_line_item()` — core matching (amount match, keyword match, org match)
+3. `_filter_candidates_by_row_texts()` — filters candidates by distinctive keyword tokens from table row text. Computes token specificity (vendor names appearing on <10% of pages are "specific"). **Exempt**: single-page exact amount matches (score >= 0.90 with "Exact amount match" rationale) always survive this filter.
+4. `_recover_combined_matches()` — if no candidates survive filtering, scans all pages for BOTH the target amount AND a distinctive keyword token. Creates high-confidence (0.95) candidates. Amount search handles OCR variations: `$72.00`, `$ 72`, `72.00`, etc.
+
+**Key gotcha:** `table_row_texts` used for keyword filtering come from `_extract_row_words()`, which reads table cells at the `table_row_index` assigned by `bedrock_entities.py`. If `table_row_index` is wrong (e.g., due to the PyMuPDF multi-value cell bug), ALL sub-items for that budget item will have contaminated keywords.
+
+**Amount tolerance:** Uses `abs(v - target) < 0.01` for floating-point comparison. Be aware that `abs(149.19 - 149.20)` is ~0.00999 which passes this check — near-miss amounts can be treated as "exact" matches.
+
 ### Multi-File Document Support (Virtual Pages)
 
 Multiple PDFs per budget item are assembled into a virtual document with sequential page numbers. `DocumentRef.source_files` maps virtual pages back to physical files via `page_offset`. Frontend resolves virtual pages to correct physical PDFs via `resolveVirtualPage()`. Flat files produce one-entry `source_files` for backward compatibility.
 
 ### Caching and Incremental Processing
 
-SQLite cache (`index_store.py` locally, DynamoDB in Lambda) stores: document SHA256 hashes, extracted text with text hash, Bedrock entity results with entity hash, word bounding boxes, table structures. Cache invalidation triggers on hash changes. Delete `index.sqlite` to force full re-run locally.
+**Two separate caches to be aware of when debugging:**
+
+**1. Entity/extraction cache (DynamoDB in Lambda, SQLite locally):**
+- Stores: document SHA256 hashes, extracted text with text hash, Bedrock entity results with entity hash, word bounding boxes, table structures
+- **Entities are stored fully enriched** — includes `budget_item`, `source`, and `table_row_index` fields already computed by `_associate_amounts_with_budget_items()`
+- Cache invalidation is **content-hash-based** (file_sha256, text_sha256), NOT code-version-based
+- **If you change entity processing logic (e.g., amount association, budget item mapping), you MUST clear the cache** — redeploying the Lambda alone won't produce different results
+- Clear locally: `rm backend/jobs/my_job/artifacts/index.sqlite`
+- Clear DynamoDB: scan and batch-delete all items from the cache table (use `aws dynamodb scan` + `batch-write-item` with DeleteRequest; add sleep between batches to avoid throttling)
+- DynamoDB table name: find via `aws cloudformation describe-stacks --stack-name InvoiceProcessorStorage --query "Stacks[0].Outputs"`
+
+**2. Match result cache (S3, match_sub_item Lambda only):**
+- `match_sub_item` Lambda caches match results to S3 at `jobs/{job_id}/artifacts/sub_item_matches/{sub_item_id}.json`
+- Purpose: survive API Gateway's 29-second timeout (Lambda runs up to 30s, caches result, frontend polls)
+- These are NOT invalidated by redeployment — if you change matching logic in `handler.py`, stale cached results may be served
+- Clear by deleting the `sub_item_matches/` prefix in S3 for the affected job
+
+**3. Re-running the pipeline:**
+- Step Functions can be re-triggered with the same input JSON (same job_id) without re-uploading files
+- Input format: `{"job_id": "uploads/{uuid}/invoice.csv", "bucket": "...", "csv_key": "uploads/{uuid}/invoice.csv", "pdf_prefix": "PLACEHOLDER"}`
+- Find the state machine ARN via `aws stepfunctions list-state-machines`
+- Start execution: `aws stepfunctions start-execution --state-machine-arn <arn> --input '<json>'`
 
 ## Configuration
 
@@ -221,6 +262,12 @@ MAX_WORKERS=3
 **Text extraction:** Check `text_source` field in output. If table pages extract poorly with PyMuPDF, set `TABLE_DETECTION_ENABLED=true`. Look for "PyMuPDF: Extracted N tables" vs "falling back to Textract" in logs.
 
 **Matching:** Check `candidates[0].rationale` for logic used. Look for "Filtered to [BudgetItem] amounts" messages for budget item filtering. Scores: >0.8 excellent, 0.5-0.8 good, 0.1-0.5 low confidence. Lower the UI confidence slider to see hidden low-score candidates.
+
+**Sub-item matching issues:** When sub-items return wrong pages:
+1. Check `table_row_texts` — if ALL sub-items show the same keywords (e.g., all say "granite"), the `table_row_index` assignment in `bedrock_entities.py` is likely wrong (PyMuPDF multi-value cell bug). Fix requires clearing DynamoDB entity cache and re-running the pipeline.
+2. Check if amounts match — compare the sub-item's target amount with what appears on evidence pages. OCR can produce `$ 72` instead of `$72.00`. The handler's text fallback regex handles this.
+3. Check keyword filtering — `_filter_candidates_by_row_texts()` may discard valid candidates if the vendor name appears in a slightly different format. Exact amount matches (score >= 0.90) are exempt from this filter.
+4. Check S3 match cache — stale results at `jobs/{job_id}/artifacts/sub_item_matches/{sub_item_id}.json` may mask fixes. Delete and re-match.
 
 ## Output Structure
 
