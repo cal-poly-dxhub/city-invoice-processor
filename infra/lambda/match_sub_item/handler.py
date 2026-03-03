@@ -210,9 +210,26 @@ def handle_match(job_id, body):
     if not pages:
         return _error(404, f"No page data found for doc_id={doc_id}")
 
-    # Optionally exclude the source page (the GL summary page)
+    # Exclude the source page (the GL summary page) and any near-duplicate
+    # copies.  The same GL page may appear in multiple physical PDFs that get
+    # combined into one virtual document, so filtering by page number alone
+    # is insufficient — we also check text similarity (Jaccard on word tokens).
     if source_page:
-        pages = [p for p in pages if p.page_number != source_page]
+        # Find the source page text from the already-loaded pages (avoids
+        # an extra S3 round-trip vs calling _load_single_page).
+        source_text = ""
+        for p in pages:
+            if p.page_number == source_page:
+                source_text = p.text
+                break
+        similar = _find_gl_duplicates(source_text, pages) if source_text else set()
+        similar.add(source_page)
+        if len(similar) > 1:
+            logger.info(
+                f"GL duplicate detection: excluding {len(similar)} pages "
+                f"(source={source_page}, duplicates={similar - {source_page}})"
+            )
+        pages = [p for p in pages if p.page_number not in similar]
 
     # Construct a synthetic LineItem
     explanation = " ".join(keywords) if keywords else ""
@@ -678,7 +695,9 @@ def _recover_combined_matches(candidates, pages, amount, row_texts,
     search_tokens = specific if specific else tokens
 
     target = float(amount)
-    tolerance = 0.01
+    # Tight tolerance for recovery — this is a fallback, so we only want
+    # amounts that genuinely match (not near-misses like $149.19 ≈ $149.20).
+    tolerance = 0.005
 
     # Pages already covered by high-score candidates
     existing_pages = set()
@@ -708,11 +727,21 @@ def _recover_combined_matches(candidates, pages, amount, row_texts,
                 continue
         if not has_amount:
             # Text fallback: search for the amount string in the page text.
-            # Handles formats like "2.68", "$2.68", "$ 2.68", "$2,068.00"
-            amount_str = f"{target:.2f}"
+            # Uses regex with word boundaries to avoid false positives
+            # (e.g., "72" matching page numbers).  Handles OCR variations:
+            #   "$72.00", "$ 72.00", "$72", "$ 72", "72.00"
             pt = page_text_map.get(page.page_number, "")
-            if amount_str in pt:
-                has_amount = True
+            amount_str = f"{target:.2f}"
+            # Build regex patterns for amount with word boundaries
+            patterns = [re.escape(amount_str)]  # "72.00"
+            int_amount = int(target)
+            if target == int_amount:
+                # Whole dollar: match "$ 72" or "$72" but not bare "72"
+                patterns.append(r"\$\s*" + str(int_amount) + r"(?![.\d])")
+            for pat in patterns:
+                if re.search(pat, pt):
+                    has_amount = True
+                    break
         if not has_amount:
             continue
 
@@ -749,7 +778,9 @@ def _recover_combined_matches(candidates, pages, amount, row_texts,
     if not new_candidates:
         return candidates
 
-    # Merge: new combined candidates first, then existing (deduplicated)
+    # Merge: combined recovery candidates first (they have BOTH amount + keyword),
+    # then existing candidates (deduplicated).  Combined candidates are stronger
+    # evidence than amount-only matches because they verify two independent signals.
     new_pages = {pn for c in new_candidates for pn in c.page_numbers}
     merged = list(new_candidates)
     for c in candidates:
@@ -758,6 +789,45 @@ def _recover_combined_matches(candidates, pages, amount, row_texts,
             merged.append(c)
     merged.sort(key=lambda c: c.score, reverse=True)
     return merged
+
+
+def _find_gl_duplicates(source_text, pages, threshold=0.85):
+    """Find pages that are near-duplicates of the GL source page.
+
+    Uses Jaccard similarity on word token sets.  The same GL summary page
+    often appears in multiple physical PDFs that get merged into one virtual
+    document — this detects those copies even though they have different
+    virtual page numbers.
+
+    Args:
+        source_text: Full text of the GL source page.
+        pages: List of PageRecord candidates.
+        threshold: Jaccard similarity threshold (0-1).  0.85 is conservative
+            enough to avoid false positives (genuine evidence pages rarely
+            share 85%+ of their vocabulary with a GL summary).
+
+    Returns:
+        Set of virtual page numbers that are near-duplicates.
+    """
+    source_tokens = set(re.findall(r'\w+', source_text.lower()))
+    if not source_tokens:
+        return set()
+
+    duplicates = set()
+    for page in pages:
+        page_tokens = set(re.findall(r'\w+', page.text.lower()))
+        if not page_tokens:
+            continue
+        intersection = len(source_tokens & page_tokens)
+        union = len(source_tokens | page_tokens)
+        jaccard = intersection / union
+        if jaccard >= threshold:
+            duplicates.add(page.page_number)
+            logger.debug(
+                f"GL duplicate: page {page.page_number} jaccard={jaccard:.3f}"
+            )
+
+    return duplicates
 
 
 def _filter_candidates_by_row_texts(candidates, pages, row_texts,
@@ -822,6 +892,20 @@ def _filter_candidates_by_row_texts(candidates, pages, row_texts,
     kept = []
     for candidate in candidates:
         pns = candidate.page_numbers
+
+        # Never discard single-page exact amount matches — the dollar amount
+        # is a stronger signal than keyword context.  This prevents the filter
+        # from removing the correct page when its text uses a slightly different
+        # format for the vendor name (e.g., "DialPad Inc" vs "dialpad").
+        has_exact_amount = (
+            candidate.score >= 0.90
+            and len(pns) == 1
+            and any("Exact amount match" in r for r in candidate.rationale)
+        )
+        if has_exact_amount:
+            kept.append(candidate)
+            continue
+
         # Count how many pages individually contain a filter token
         matching_pages = sum(
             1 for pn in pns
