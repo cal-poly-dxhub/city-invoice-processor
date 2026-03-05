@@ -113,36 +113,64 @@ def handle_auto_extract(job_id, body):
     # Use table_row amounts if available, otherwise fall back to all matching
     matching_amounts = table_row_amounts if table_row_amounts else all_budget_amounts
 
-    # Build proposed sub-items
-    proposed = []
+    # Group amounts by table_row_index to merge balance/allocation from same row
+    from collections import defaultdict
+    row_groups = defaultdict(list)
     for amount_obj in matching_amounts:
-        value = amount_obj.get("value")
-        if value is None:
+        tri = amount_obj.get("table_row_index")
+        if tri is not None:
+            row_groups[tri].append(amount_obj)
+        else:
+            # No table_row_index — treat as standalone proposal
+            row_groups[f"_solo_{id(amount_obj)}"].append(amount_obj)
+
+    proposed = []
+    for group_key, group_amounts in row_groups.items():
+        values = [a["value"] for a in group_amounts if a.get("value") is not None]
+        if not values:
             continue
 
-        context = amount_obj.get("context", "")
-        # Extract keywords from context, filtering out budget item name words
-        keywords = _extract_keywords_from_context(context, budget_item)
-
-        # row_texts = context keywords (primary filter tokens).
-        # table_row_texts = table cell words (fallback, only used when all
-        # keywords are generic). Kept separate because table_row_index can
-        # point to the wrong row, so we only use table words as last resort.
+        tri = group_amounts[0].get("table_row_index")
         table_row_texts = _extract_row_words(
-            page_data.get("tables"),
-            amount_obj.get("table_row_index"),
-            budget_item, budget_slug,
+            page_data.get("tables"), tri, budget_item, budget_slug,
         )
 
-        proposed.append({
-            "label": context or f"${value:.2f}",
-            "amount": value,
-            "keywords": keywords,
-            "table_row_index": amount_obj.get("table_row_index"),
-            "raw_amount": amount_obj.get("raw", ""),
-            "row_texts": list(keywords),
-            "table_row_texts": table_row_texts,
-        })
+        if len(group_amounts) == 1:
+            # Single amount in this row — standard proposal
+            amount_obj = group_amounts[0]
+            context = amount_obj.get("context", "")
+            keywords = _extract_keywords_from_context(context, budget_item)
+            proposed.append({
+                "label": context or f"${values[0]:.2f}",
+                "amount": values[0],
+                "amounts": values,
+                "keywords": keywords,
+                "table_row_index": tri,
+                "raw_amount": amount_obj.get("raw", ""),
+                "row_texts": list(keywords),
+                "table_row_texts": table_row_texts,
+            })
+        else:
+            # Multiple amounts on same row — merge into one proposal
+            all_contexts = [a.get("context", "") for a in group_amounts]
+            combined_context = " / ".join(c for c in all_contexts if c)
+            all_keywords = set()
+            for a in group_amounts:
+                all_keywords.update(
+                    _extract_keywords_from_context(a.get("context", ""), budget_item)
+                )
+            keywords = list(all_keywords)[:10]
+            label = combined_context or " / ".join(f"${v:.2f}" for v in values)
+            proposed.append({
+                "label": label,
+                "amount": values[0],
+                "amounts": values,
+                "keywords": keywords,
+                "table_row_index": tri,
+                "raw_amount": " / ".join(a.get("raw", "") for a in group_amounts),
+                "row_texts": list(keywords),
+                "table_row_texts": table_row_texts,
+            })
 
     source_type = "table_row" if table_row_amounts else "all"
     logger.info(
@@ -174,13 +202,16 @@ def handle_match(job_id, body):
     source_page = body.get("source_page")
     row_texts = body.get("row_texts", [])
     table_row_texts = body.get("table_row_texts", [])
+    amounts_list = body.get("amounts", [])
+    if not amounts_list and amount is not None:
+        amounts_list = [amount]
 
     if not all([doc_id, budget_item]):
         return _error(400, "doc_id and budget_item are required")
 
     # Generate a deterministic request ID from the match parameters.
     request_id = _make_request_id(job_id, sub_item_id, doc_id, amount,
-                                   row_texts, table_row_texts)
+                                   row_texts, table_row_texts, amounts=amounts_list)
 
     # Check S3 for a cached result (from a previous invocation that may have
     # completed after the API Gateway timeout).
@@ -231,18 +262,26 @@ def handle_match(job_id, body):
             )
         pages = [p for p in pages if p.page_number not in similar]
 
-    # Construct a synthetic LineItem
+    # Run matching for each amount (supports merged balance/allocation sub-items)
     explanation = " ".join(keywords) if keywords else ""
-    synthetic_item = LineItem(
-        row_id=sub_item_id or "sub_item",
-        row_index=0,
-        budget_item=budget_item,
-        amount=Decimal(str(amount)) if amount is not None else None,
-        explanation=explanation,
-    )
+    all_candidates = []
+    for match_amount in amounts_list:
+        synthetic_item = LineItem(
+            row_id=sub_item_id or "sub_item",
+            row_index=0,
+            budget_item=budget_item,
+            amount=Decimal(str(match_amount)) if match_amount is not None else None,
+            explanation=explanation,
+        )
+        all_candidates.extend(generate_candidates_for_line_item(synthetic_item, pages))
 
-    # Run matching
-    candidates = generate_candidates_for_line_item(synthetic_item, pages)
+    # Deduplicate by page set, keeping highest-scoring candidate per unique page combination
+    seen_pages = {}
+    for c in sorted(all_candidates, key=lambda x: x.score, reverse=True):
+        key = tuple(sorted(c.page_numbers))
+        if key not in seen_pages:
+            seen_pages[key] = c
+    candidates = list(seen_pages.values())
 
     t2 = time.time()
     logger.info(f"TIMING: matching = {t2 - t1:.2f}s ({len(candidates)} candidates)")
@@ -268,10 +307,11 @@ def handle_match(job_id, body):
     # ones containing BOTH the target amount AND a distinctive token (what the
     # user does manually with "granite AND 2.68"). If found, inject or boost
     # those candidates.
-    if amount and (row_texts or table_row_texts):
-        filtered = _recover_combined_matches(
-            filtered, pages, amount, row_texts, table_row_texts, doc_id
-        )
+    if amounts_list and (row_texts or table_row_texts):
+        for match_amount in amounts_list:
+            filtered = _recover_combined_matches(
+                filtered, pages, match_amount, row_texts, table_row_texts, doc_id
+            )
 
     t3 = time.time()
     logger.info(f"TIMING: filtering = {t3 - t2:.2f}s, total = {t3 - t0:.2f}s")
@@ -316,11 +356,12 @@ def handle_poll(job_id, body):
 
 
 def _make_request_id(job_id, sub_item_id, doc_id, amount, row_texts,
-                      table_row_texts):
+                      table_row_texts, amounts=None):
     """Generate a deterministic request ID from match parameters."""
     key_parts = json.dumps([
         job_id, sub_item_id, doc_id, str(amount),
         sorted(row_texts), sorted(table_row_texts or []),
+        sorted([str(a) for a in (amounts or [])]),
     ], sort_keys=True)
     return hashlib.sha256(key_parts.encode()).hexdigest()[:16]
 
