@@ -156,11 +156,22 @@ class SubItem(BaseModel):
     selected_evidence: Optional[SelectedEvidence] = None
 
 
-class CompletionStatus(BaseModel):
-    """Payment/Invoice verification status for a line item or sub-item."""
+class PageReference(BaseModel):
+    """A reference to a specific page in a document, used as evidence."""
 
-    payment: bool = False
-    invoice: bool = False
+    page: int
+    doc_id: str
+
+
+class CompletionStatus(BaseModel):
+    """Payment/Invoice verification status for a line item or sub-item.
+
+    Each field holds a list of page references that serve as evidence.
+    An item is considered verified when its list has at least one entry.
+    """
+
+    payment: List[PageReference] = Field(default_factory=list)
+    invoice: List[PageReference] = Field(default_factory=list)
 
 
 class UserEdits(BaseModel):

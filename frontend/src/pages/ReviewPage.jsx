@@ -201,20 +201,34 @@ function ReviewPage() {
     });
   }, []);
 
-  const toggleCompletionStatus = useCallback((rowId, field) => {
+  const togglePageEvidence = useCallback((rowId, field, pageNum, docId) => {
     setCompletionStatus(prev => {
-      const current = prev[rowId] || { payment: false, invoice: false };
-      return { ...prev, [rowId]: { ...current, [field]: !current[field] } };
+      const current = prev[rowId] || { payment: [], invoice: [] };
+      const arr = Array.isArray(current[field]) ? current[field] : [];
+      const existingIdx = arr.findIndex(e => e.page === pageNum && e.doc_id === docId);
+      const updated = existingIdx >= 0
+        ? arr.filter((_, i) => i !== existingIdx)
+        : [...arr, { page: pageNum, doc_id: docId }];
+      return { ...prev, [rowId]: { ...current, [field]: updated } };
     });
   }, []);
 
   const getLineItemCompletionStatus = useCallback((rowId) => {
     const subs = subItems[rowId] || [];
     if (subs.length === 0) {
-      return completionStatus[rowId] || { payment: false, invoice: false };
+      const status = completionStatus[rowId] || { payment: [], invoice: [] };
+      const payArr = Array.isArray(status.payment) ? status.payment : [];
+      const invArr = Array.isArray(status.invoice) ? status.invoice : [];
+      return { payment: payArr.length > 0, invoice: invArr.length > 0 };
     }
-    const allPayment = subs.every(si => completionStatus[si.sub_item_id]?.payment);
-    const allInvoice = subs.every(si => completionStatus[si.sub_item_id]?.invoice);
+    const allPayment = subs.every(si => {
+      const s = completionStatus[si.sub_item_id] || { payment: [], invoice: [] };
+      return Array.isArray(s.payment) && s.payment.length > 0;
+    });
+    const allInvoice = subs.every(si => {
+      const s = completionStatus[si.sub_item_id] || { payment: [], invoice: [] };
+      return Array.isArray(s.invoice) && s.invoice.length > 0;
+    });
     return { payment: allPayment, invoice: allInvoice };
   }, [completionStatus, subItems]);
 
@@ -222,6 +236,14 @@ function ReviewPage() {
     const status = getLineItemCompletionStatus(rowId);
     return status.payment && status.invoice;
   }, [getLineItemCompletionStatus]);
+
+  const getCompletionPages = useCallback((rowId) => {
+    const status = completionStatus[rowId] || { payment: [], invoice: [] };
+    return {
+      payment: Array.isArray(status.payment) ? status.payment : [],
+      invoice: Array.isArray(status.invoice) ? status.invoice : [],
+    };
+  }, [completionStatus]);
 
   const getNextSubItemSuffix = useCallback(
     (parentRowId) => {
@@ -513,7 +535,6 @@ function ReviewPage() {
                   }
                   completionStatus={getLineItemCompletionStatus(item.row_id)}
                   subItemCompletionStatus={completionStatus}
-                  onToggleCompletion={toggleCompletionStatus}
                 />
               ))}
             </div>
@@ -535,6 +556,9 @@ function ReviewPage() {
               onAddSubItems={addSubItems}
               getNextSubItemSuffix={getNextSubItemSuffix}
               subItems={subItems[selectedItem?._isSubItem ? selectedItem._parentRowId : selectedItem?.row_id] || []}
+              completionPages={getCompletionPages(selectedItem?.row_id)}
+              onTogglePageEvidence={togglePageEvidence}
+              itemRowId={selectedItem?.row_id}
             />
           ) : (
             <div className="empty-state">

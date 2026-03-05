@@ -24,7 +24,7 @@ const LEGACY_FILENAME_MAP = {
   'Indirect Costs': 'Indirect_Costs.pdf',
 }
 
-function PDFViewer({ item, documents, matchType, jobId, userEditedCandidates, setUserEditedCandidates, userAnnotations, setUserAnnotations, onAddSubItem, onAddSubItems, getNextSubItemSuffix, subItems = [] }) {
+function PDFViewer({ item, documents, matchType, jobId, userEditedCandidates, setUserEditedCandidates, userAnnotations, setUserAnnotations, onAddSubItem, onAddSubItems, getNextSubItemSuffix, subItems = [], completionPages, onTogglePageEvidence, itemRowId }) {
   const [pdfsReady, setPdfsReady] = useState(false) // True when all source PDFs are loaded
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -48,6 +48,11 @@ function PDFViewer({ item, documents, matchType, jobId, userEditedCandidates, se
   const pdfDocsRef = useRef({}) // Cache of loaded PDF.js documents: { source_doc_id: pdfDoc }
   const renderTaskRef = useRef(null) // Current PDF.js render task (for cancellation)
   const renderGenRef = useRef(0) // Generation counter to discard stale retry callbacks
+
+  const isPageTagged = (field, pageNum) => {
+    if (!completionPages?.[field]) return false
+    return completionPages[field].some(e => e.page === pageNum)
+  }
 
   // Get source files for the current document (with backward compat fallback)
   const getSourceFiles = () => {
@@ -1028,6 +1033,22 @@ function PDFViewer({ item, documents, matchType, jobId, userEditedCandidates, se
                           Auto-Extract Sub-Items
                         </button>
                       )}
+                      <div className="page-evidence-toggles">
+                        <button
+                          className={`evidence-toggle-btn payment ${isPageTagged('payment', pageNum) ? 'active' : ''}`}
+                          onClick={() => onTogglePageEvidence?.(itemRowId, 'payment', pageNum, doc?.doc_id || '')}
+                          title={isPageTagged('payment', pageNum) ? 'Remove as proof of payment' : 'Mark as proof of payment'}
+                        >
+                          {isPageTagged('payment', pageNum) ? '✓ ' : ''}Payment
+                        </button>
+                        <button
+                          className={`evidence-toggle-btn invoice ${isPageTagged('invoice', pageNum) ? 'active' : ''}`}
+                          onClick={() => onTogglePageEvidence?.(itemRowId, 'invoice', pageNum, doc?.doc_id || '')}
+                          title={isPageTagged('invoice', pageNum) ? 'Remove as proof of invoice' : 'Mark as proof of invoice'}
+                        >
+                          {isPageTagged('invoice', pageNum) ? '✓ ' : ''}Invoice
+                        </button>
+                      </div>
                     </div>
                   </div>
                   <div
