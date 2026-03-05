@@ -24,7 +24,7 @@ const LEGACY_FILENAME_MAP = {
   'Indirect Costs': 'Indirect_Costs.pdf',
 }
 
-function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted, jobId, userEditedCandidates, setUserEditedCandidates, userAnnotations, setUserAnnotations, onAddSubItem, onAddSubItems, getNextSubItemSuffix, subItems = [] }) {
+function PDFViewer({ item, documents, matchType, jobId, userEditedCandidates, setUserEditedCandidates, userAnnotations, setUserAnnotations, onAddSubItem, onAddSubItems, getNextSubItemSuffix, subItems = [] }) {
   const [pdfsReady, setPdfsReady] = useState(false) // True when all source PDFs are loaded
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -1028,14 +1028,6 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted, j
                           Auto-Extract Sub-Items
                         </button>
                       )}
-
-                      <button
-                        className={`mark-done-btn ${isCompleted ? 'completed' : ''}`}
-                        onClick={() => onMarkGroupDone(item.row_id)}
-                        title={isCompleted ? "This line item is already marked as done" : "Mark this line item as verified and move to next item"}
-                      >
-                        {isCompleted ? '✓ Done' : 'Mark Line Item Done'}
-                      </button>
                     </div>
                   </div>
                   <div

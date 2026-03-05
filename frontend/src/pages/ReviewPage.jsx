@@ -23,7 +23,6 @@ function ReviewPage() {
   const [selectedItem, setSelectedItem] = useState(null);
   const [verificationMode, setVerificationMode] =
     useState("needs-verification");
-  const [completedItems, setCompletedItems] = useState(new Set());
   const [showSummary, setShowSummary] = useState(false);
   const [minConfidenceScore, setMinConfidenceScore] = useState(0.5);
 
@@ -31,6 +30,7 @@ function ReviewPage() {
   const [userEditedCandidates, setUserEditedCandidates] = useState({});
   const [userAnnotations, setUserAnnotations] = useState({});
   const [subItems, setSubItems] = useState({}); // { parentRowId: SubItem[] }
+  const [completionStatus, setCompletionStatus] = useState({}); // { rowId: { payment: bool, invoice: bool } }
   const editsLoadedRef = useRef(false);
   const saveTimerRef = useRef(null);
 
@@ -135,6 +135,7 @@ function ReviewPage() {
         }
         setSubItems(grouped);
       }
+      if (edits.completion_status) setCompletionStatus(edits.completion_status);
     } catch {
       // Edits not available — start fresh
     } finally {
@@ -142,7 +143,7 @@ function ReviewPage() {
     }
   };
 
-  const saveUserEdits = useCallback((candidates, annotations, subs) => {
+  const saveUserEdits = useCallback((candidates, annotations, subs, completion) => {
     if (!editsLoadedRef.current) return;
 
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
@@ -156,6 +157,7 @@ function ReviewPage() {
             edited_candidates: candidates,
             annotations: annotations,
             sub_items: allSubItems,
+            completion_status: completion,
           }),
         });
       } catch {
@@ -166,8 +168,8 @@ function ReviewPage() {
 
   // Auto-save when edits change
   useEffect(() => {
-    saveUserEdits(userEditedCandidates, userAnnotations, subItems);
-  }, [userEditedCandidates, userAnnotations, subItems, saveUserEdits]);
+    saveUserEdits(userEditedCandidates, userAnnotations, subItems, completionStatus);
+  }, [userEditedCandidates, userAnnotations, subItems, completionStatus, saveUserEdits]);
 
   const addSubItem = useCallback((subItem) => {
     setSubItems((prev) => {
@@ -192,7 +194,34 @@ function ReviewPage() {
       if (parentList.length === 0) delete updated[parentRowId];
       return updated;
     });
+    setCompletionStatus(prev => {
+      const next = { ...prev };
+      delete next[subItemId];
+      return next;
+    });
   }, []);
+
+  const toggleCompletionStatus = useCallback((rowId, field) => {
+    setCompletionStatus(prev => {
+      const current = prev[rowId] || { payment: false, invoice: false };
+      return { ...prev, [rowId]: { ...current, [field]: !current[field] } };
+    });
+  }, []);
+
+  const getLineItemCompletionStatus = useCallback((rowId) => {
+    const subs = subItems[rowId] || [];
+    if (subs.length === 0) {
+      return completionStatus[rowId] || { payment: false, invoice: false };
+    }
+    const allPayment = subs.every(si => completionStatus[si.sub_item_id]?.payment);
+    const allInvoice = subs.every(si => completionStatus[si.sub_item_id]?.invoice);
+    return { payment: allPayment, invoice: allInvoice };
+  }, [completionStatus, subItems]);
+
+  const isItemCompleted = useCallback((rowId) => {
+    const status = getLineItemCompletionStatus(rowId);
+    return status.payment && status.invoice;
+  }, [getLineItemCompletionStatus]);
 
   const getNextSubItemSuffix = useCallback(
     (parentRowId) => {
@@ -209,6 +238,7 @@ function ReviewPage() {
     budget_item: parentItem.budget_item,
     raw: {
       amount: subItem.amount,
+      amounts: subItem.amounts || [],
       explanation: subItem.label,
     },
     normalized: {
@@ -226,36 +256,6 @@ function ReviewPage() {
     _parentRowId: subItem.parent_row_id,
     _label: subItem.label,
   });
-
-  const markGroupDone = (rowId) => {
-    const isCurrentlyCompleted = completedItems.has(rowId);
-
-    if (isCurrentlyCompleted) {
-      setCompletedItems((prev) => {
-        const newSet = new Set(prev);
-        newSet.delete(rowId);
-        return newSet;
-      });
-    } else {
-      if (verificationMode === "needs-verification") {
-        const currentIndex = filteredItems.findIndex(
-          (item) => item.row_id === rowId,
-        );
-
-        let nextItem = null;
-        if (currentIndex >= 0 && currentIndex < filteredItems.length - 1) {
-          nextItem = filteredItems[currentIndex + 1];
-        } else if (currentIndex > 0) {
-          nextItem = filteredItems[0];
-        }
-
-        setCompletedItems((prev) => new Set([...prev, rowId]));
-        setSelectedItem(nextItem);
-      } else {
-        setCompletedItems((prev) => new Set([...prev, rowId]));
-      }
-    }
-  };
 
   const filterCandidates = (candidates) => {
     if (!candidates) return [];
@@ -329,7 +329,7 @@ function ReviewPage() {
 
         if (
           verificationMode === "needs-verification" &&
-          completedItems.has(item.row_id)
+          isItemCompleted(item.row_id)
         ) {
           return false;
         }
@@ -378,7 +378,7 @@ function ReviewPage() {
   const incompleteItems =
     data?.line_items
       ?.map(item => applyConfidenceFilter(item))
-      ?.filter((item) => !completedItems.has(item.row_id)) || [];
+      ?.filter((item) => !isItemCompleted(item.row_id)) || [];
 
   return (
     <div className="review-page">
@@ -501,7 +501,7 @@ function ReviewPage() {
                   item={item}
                   matchType={getMatchType(item)}
                   isSelected={selectedItem?.row_id === item.row_id}
-                  isCompleted={completedItems.has(item.row_id)}
+                  isCompleted={isItemCompleted(item.row_id)}
                   onClick={() => setSelectedItem(item)}
                   subItems={subItems[item.row_id] || []}
                   selectedSubItemId={selectedItem?._isSubItem ? selectedItem.row_id : null}
@@ -511,6 +511,9 @@ function ReviewPage() {
                   onRemoveSubItem={(subItemId) =>
                     removeSubItem(item.row_id, subItemId)
                   }
+                  completionStatus={getLineItemCompletionStatus(item.row_id)}
+                  subItemCompletionStatus={completionStatus}
+                  onToggleCompletion={toggleCompletionStatus}
                 />
               ))}
             </div>
@@ -523,8 +526,6 @@ function ReviewPage() {
               item={selectedItem}
               documents={data.documents}
               matchType={getMatchType(selectedItem)}
-              onMarkGroupDone={markGroupDone}
-              isCompleted={completedItems.has(selectedItem.row_id)}
               jobId={jobId}
               userEditedCandidates={userEditedCandidates}
               setUserEditedCandidates={setUserEditedCandidates}
