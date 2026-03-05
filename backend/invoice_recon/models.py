@@ -150,9 +150,17 @@ class SubItem(BaseModel):
     doc_id: str  # Budget item doc_id
     keywords: List[str] = Field(default_factory=list)
     amount: Optional[float] = None
+    amounts: List[float] = Field(default_factory=list)  # Multiple amounts (merged balance/allocation rows)
     source_page: Optional[int] = None  # The GL page this was created from
     candidates: List[CandidateEvidenceSet] = Field(default_factory=list)
     selected_evidence: Optional[SelectedEvidence] = None
+
+
+class CompletionStatus(BaseModel):
+    """Payment/Invoice verification status for a line item or sub-item."""
+
+    payment: bool = False
+    invoice: bool = False
 
 
 class UserEdits(BaseModel):
@@ -160,3 +168,4 @@ class UserEdits(BaseModel):
 
     overrides: List[UserEditOverride] = Field(default_factory=list)
     sub_items: List[SubItem] = Field(default_factory=list)
+    completion_status: Dict[str, CompletionStatus] = Field(default_factory=dict)
