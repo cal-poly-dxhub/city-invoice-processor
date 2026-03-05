@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react'
 import { resolveVirtualPage, getSourceFiles } from '../utils/virtualPages.js'
+import { generateReportCsv, downloadCsv } from '../utils/csvExport.js'
 import './ReconciliationReport.css'
 
 function ReconciliationReport({
@@ -40,6 +41,18 @@ function ReconciliationReport({
       }
       return next
     })
+  }
+
+  function handleExportCsv() {
+    const csv = generateReportCsv(
+      lineItems,
+      subItems,
+      completionStatus,
+      getLineItemCompletionStatus,
+      getCompletionPages,
+      documents,
+    )
+    downloadCsv(csv, 'reconciliation-report.csv')
   }
 
   // Resolve a PageReference to a display string
@@ -206,6 +219,12 @@ function ReconciliationReport({
       {lineItems.length === 0 && (
         <div className="report-empty">No line items found.</div>
       )}
+
+      <div className="report-footer">
+        <button className="report-export-btn" onClick={handleExportCsv}>
+          Export CSV
+        </button>
+      </div>
     </div>
   )
 }
