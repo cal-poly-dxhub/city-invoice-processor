@@ -51,7 +51,8 @@ function PDFViewer({ item, documents, matchType, jobId, userEditedCandidates, se
 
   const isPageTagged = (field, pageNum) => {
     if (!completionPages?.[field]) return false
-    return completionPages[field].some(e => e.page === pageNum)
+    const docId = doc?.doc_id || ''
+    return completionPages[field].some(e => e.page === pageNum && e.doc_id === docId)
   }
 
   // Get source files for the current document (with backward compat fallback)
