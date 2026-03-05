@@ -3,28 +3,13 @@ import * as pdfjsLib from 'pdfjs-dist'
 import SearchBar from './SearchBar'
 import CreateSubItemDialog from './CreateSubItemDialog'
 import { DATA_BASE } from '../config'
+import { resolveVirtualPage as _resolveVirtualPage, getSourceFiles as _getSourceFiles } from '../utils/virtualPages'
 import './PDFViewer.css'
 
 // Set up PDF.js worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`
 
-// Fallback filename map for backward compat with old reconciliation.json without source_files
-const LEGACY_FILENAME_MAP = {
-  'Salary': 'Salary.pdf',
-  'Fringe': 'Fringe.pdf',
-  'Contractual Service': 'Contractual_Service.pdf',
-  'Equipment': 'Equipment.pdf',
-  'Insurance': 'Insurance.pdf',
-  'Travel and Conferences': 'Travel_and_Conferences.pdf',
-  'Space Rental/Occupancy Costs': 'Space_Rental_Occupancy_Costs.pdf',
-  'Telecommunications': 'Telecommunications.pdf',
-  'Utilities': 'Utilities.pdf',
-  'Supplies': 'Supplies.pdf',
-  'Other': 'Other.pdf',
-  'Indirect Costs': 'Indirect_Costs.pdf',
-}
-
-function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted, jobId, userEditedCandidates, setUserEditedCandidates, userAnnotations, setUserAnnotations, onAddSubItem, onAddSubItems, getNextSubItemSuffix, subItems = [] }) {
+function PDFViewer({ item, documents, matchType, jobId, userEditedCandidates, setUserEditedCandidates, userAnnotations, setUserAnnotations, onAddSubItem, onAddSubItems, getNextSubItemSuffix, subItems = [], completionPages, onTogglePageEvidence, itemRowId }) {
   const [pdfsReady, setPdfsReady] = useState(false) // True when all source PDFs are loaded
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -49,34 +34,17 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted, j
   const renderTaskRef = useRef(null) // Current PDF.js render task (for cancellation)
   const renderGenRef = useRef(0) // Generation counter to discard stale retry callbacks
 
-  // Get source files for the current document (with backward compat fallback)
-  const getSourceFiles = () => {
-    if (doc?.source_files?.length > 0) return doc.source_files
-    // Backward compat: synthesize a single source file from budget_item
-    const filename = LEGACY_FILENAME_MAP[doc?.budget_item]
-    if (!filename) return []
-    return [{
-      doc_id: doc.doc_id,
-      pdf_path: filename,
-      filename: filename,
-      page_count: doc.page_count || 0,
-      page_offset: 0,
-    }]
+  const isPageTagged = (field, pageNum) => {
+    if (!completionPages?.[field]) return false
+    const docId = doc?.doc_id || ''
+    return completionPages[field].some(e => e.page === pageNum && e.doc_id === docId)
   }
 
+  // Get source files for the current document (with backward compat fallback)
+  const getSourceFiles = () => _getSourceFiles(doc)
+
   // Resolve a virtual page number to a physical PDF + local page number
-  const resolveVirtualPage = (virtualPageNum) => {
-    const sourceFiles = getSourceFiles()
-    for (const sf of sourceFiles) {
-      if (virtualPageNum > sf.page_offset && virtualPageNum <= sf.page_offset + sf.page_count) {
-        return {
-          sourceFile: sf,
-          localPage: virtualPageNum - sf.page_offset,
-        }
-      }
-    }
-    return null
-  }
+  const resolveVirtualPage = (virtualPageNum) => _resolveVirtualPage(virtualPageNum, getSourceFiles())
 
   // Get the source filename for a virtual page (for display)
   const getSourceFilenameForPage = (virtualPageNum) => {
@@ -1028,14 +996,22 @@ function PDFViewer({ item, documents, matchType, onMarkGroupDone, isCompleted, j
                           Auto-Extract Sub-Items
                         </button>
                       )}
-
-                      <button
-                        className={`mark-done-btn ${isCompleted ? 'completed' : ''}`}
-                        onClick={() => onMarkGroupDone(item.row_id)}
-                        title={isCompleted ? "This line item is already marked as done" : "Mark this line item as verified and move to next item"}
-                      >
-                        {isCompleted ? '✓ Done' : 'Mark Line Item Done'}
-                      </button>
+                      <div className="page-evidence-toggles">
+                        <button
+                          className={`evidence-toggle-btn payment ${isPageTagged('payment', pageNum) ? 'active' : ''}`}
+                          onClick={() => onTogglePageEvidence?.(itemRowId, 'payment', pageNum, doc?.doc_id || '')}
+                          title={isPageTagged('payment', pageNum) ? 'Remove as proof of payment' : 'Mark as proof of payment'}
+                        >
+                          {isPageTagged('payment', pageNum) ? '✓ ' : ''}Payment
+                        </button>
+                        <button
+                          className={`evidence-toggle-btn invoice ${isPageTagged('invoice', pageNum) ? 'active' : ''}`}
+                          onClick={() => onTogglePageEvidence?.(itemRowId, 'invoice', pageNum, doc?.doc_id || '')}
+                          title={isPageTagged('invoice', pageNum) ? 'Remove as proof of invoice' : 'Mark as proof of invoice'}
+                        >
+                          {isPageTagged('invoice', pageNum) ? '✓ ' : ''}Invoice
+                        </button>
+                      </div>
                     </div>
                   </div>
                   <div

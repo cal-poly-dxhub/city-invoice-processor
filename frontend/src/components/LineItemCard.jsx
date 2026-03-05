@@ -10,6 +10,8 @@ function LineItemCard({
   selectedSubItemId = null,
   onSubItemClick,
   onRemoveSubItem,
+  completionStatus,          // NEW: { payment: bool, invoice: bool }
+  subItemCompletionStatus,   // NEW: full completion map for sub-item checkboxes
 }) {
   const pageCount = item.selected_evidence?.page_numbers?.length || 0
   const topCandidate = item.candidates?.[0]
@@ -94,6 +96,24 @@ function LineItemCard({
               <span className="score">Score: {score.toFixed(2)}</span>
             )}
           </div>
+          <div className="completion-checkboxes">
+            <label className="completion-checkbox readonly" onClick={e => e.stopPropagation()}>
+              <input
+                type="checkbox"
+                checked={completionStatus?.payment || false}
+                readOnly
+              />
+              <span className="checkbox-label">Payment</span>
+            </label>
+            <label className="completion-checkbox readonly" onClick={e => e.stopPropagation()}>
+              <input
+                type="checkbox"
+                checked={completionStatus?.invoice || false}
+                readOnly
+              />
+              <span className="checkbox-label">Invoice</span>
+            </label>
+          </div>
           {hasSubItems && (
             <div className="sub-items-badge">
               {subItems.length} sub-item{subItems.length !== 1 ? 's' : ''}
@@ -130,11 +150,33 @@ function LineItemCard({
                 </div>
                 <div className="sub-item-body">
                   <div className="sub-item-label">{subItem.label}</div>
-                  {subItem.amount != null && (
+                  {subItem.amounts && subItem.amounts.length > 1 ? (
+                    <div className="sub-item-amount merged">
+                      {subItem.amounts.map(a => `$${a.toFixed(2)}`).join(' / ')}
+                    </div>
+                  ) : subItem.amount != null ? (
                     <div className="sub-item-amount">${subItem.amount.toFixed(2)}</div>
-                  )}
+                  ) : null}
                 </div>
                 <div className="sub-item-footer">
+                  <div className="completion-checkboxes">
+                    <label className="completion-checkbox readonly" onClick={e => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        checked={Array.isArray(subItemCompletionStatus?.[subItem.sub_item_id]?.payment) ? subItemCompletionStatus[subItem.sub_item_id].payment.length > 0 : false}
+                        readOnly
+                      />
+                      <span className="checkbox-label">Pmt</span>
+                    </label>
+                    <label className="completion-checkbox readonly" onClick={e => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        checked={Array.isArray(subItemCompletionStatus?.[subItem.sub_item_id]?.invoice) ? subItemCompletionStatus[subItem.sub_item_id].invoice.length > 0 : false}
+                        readOnly
+                      />
+                      <span className="checkbox-label">Inv</span>
+                    </label>
+                  </div>
                   <span className="pages-count">
                     {siPageCount} page{siPageCount !== 1 ? 's' : ''}
                   </span>
