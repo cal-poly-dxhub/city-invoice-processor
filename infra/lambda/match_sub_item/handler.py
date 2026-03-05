@@ -30,6 +30,10 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 MIN_CANDIDATE_SCORE = float(os.environ.get("MIN_CANDIDATE_SCORE", "0.1"))
+# Minimum score to auto-select a match.  Candidates below this threshold
+# are still returned in the list but selected_evidence will be None,
+# signaling to the frontend that no confident match was found.
+MIN_AUTO_SELECT_SCORE = float(os.environ.get("MIN_AUTO_SELECT_SCORE", "0.50"))
 S3_DOWNLOAD_CONCURRENCY = 20
 
 # Global cache: persists across invocations in the same Lambda execution environment.
@@ -316,12 +320,19 @@ def handle_match(job_id, body):
     t3 = time.time()
     logger.info(f"TIMING: filtering = {t3 - t2:.2f}s, total = {t3 - t0:.2f}s")
 
-    # Select default evidence
-    selected = select_default_evidence(filtered)
+    # Select default evidence only if the best candidate meets the confidence
+    # threshold.  Low-score candidates are still returned for manual review,
+    # but selected_evidence=None tells the frontend "no confident match."
+    best_score = filtered[0].score if filtered else 0
+    if best_score >= MIN_AUTO_SELECT_SCORE:
+        selected = select_default_evidence(filtered)
+    else:
+        selected = None
 
     logger.info(
         f"MatchSubItem: {len(filtered)} candidates (from {len(candidates)}) "
-        f"for sub_item_id={sub_item_id}"
+        f"for sub_item_id={sub_item_id}, best_score={best_score:.2f}, "
+        f"auto_selected={'yes' if selected else 'no'}"
     )
 
     result_data = {
