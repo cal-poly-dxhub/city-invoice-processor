@@ -108,7 +108,7 @@ Each Lambda in `infra/lambda/`:
 | Module | Role |
 |--------|------|
 | `cli.py` | Typer CLI entry point, orchestrates local pipeline |
-| `models.py` | Pydantic models (LineItem, DocumentRef, PageRecord, CandidateEvidenceSet, SourceFile) |
+| `models.py` | Pydantic models (LineItem, DocumentRef, PageRecord, CandidateEvidenceSet, SourceFile, SubItem, PageReference, CompletionStatus, UserEdits) |
 | `csv_parser.py` | Parses invoice CSV into LineItem objects |
 | `budget_items.py` | Budget item naming, slug normalization, PDF discovery |
 | `pdf_extract.py` | PDF text extraction (PyMuPDF + Textract fallback) |
@@ -196,9 +196,43 @@ On-demand API for matching sub-items (individual vendors within a budget item GL
 
 **Amount tolerance:** Uses `abs(v - target) < 0.01` for floating-point comparison. Be aware that `abs(149.19 - 149.20)` is ~0.00999 which passes this check — near-miss amounts can be treated as "exact" matches.
 
+### Payment/Invoice Verification & Completion Status
+
+Each line item and sub-item can be marked with **Payment** and **Invoice** evidence — specific pages that prove payment was made or an invoice was received.
+
+**Data model (`models.py`):**
+- `PageReference` — `{ page: int, doc_id: str }` — a virtual page number + virtual doc_id (budget slug)
+- `CompletionStatus` — `{ payment: List[PageReference], invoice: List[PageReference] }` — evidence arrays per item
+- `UserEdits.completion_status` — `Dict[str, CompletionStatus]` — keyed by `row_id` (line items) or `sub_item_id` (sub-items)
+
+**Frontend state flow:**
+- `ReviewPage.jsx` owns `completionStatus` state, persisted to `user_edits.json` via auto-save
+- `PDFViewer.jsx` renders per-page Payment/Invoice toggle buttons. Clicking toggles a `PageReference` in/out of the item's evidence array
+- `LineItemCard.jsx` shows read-only checkboxes derived from evidence arrays
+- Line items with sub-items: checkboxes are **rollup** — checked only when ALL sub-items have evidence
+- Line items without sub-items: derived from their own page evidence directly
+
+**Virtual page references:** `PageReference.page` is the virtual page number, `PageReference.doc_id` is the budget slug (e.g., `"telecommunications"`). To resolve to a physical file, use `resolveVirtualPage()` from `frontend/src/utils/virtualPages.js`.
+
+### Reconciliation Report
+
+The "Finish Reconciliation" button opens a report modal (`ReconciliationReport.jsx`) showing all line items with their verification status.
+
+**Layout:** Two sections — "Needs Attention" (items missing payment and/or invoice evidence) listed first, then "Completed" items. Both sections sorted numerically by `row_index`.
+
+**Per-item display:** Row number, budget item, amount, employee name (Salary/Fringe), payment/invoice status with clickable page references. Items with sub-items show rollup counts (e.g., "2/3 sub-items") and are expandable.
+
+**Page reference format:** `filename.pdf p.N (vp M)` — physical filename + local page, plus virtual page number. Clicking navigates to that item/page in the PDFViewer.
+
+**CSV export:** "Export CSV" button generates a client-side CSV download (`frontend/src/utils/csvExport.js`). Columns: Row, Budget Item, Label, Amount, Employee, Payment Status, Payment Evidence, Invoice Status, Invoice Evidence. Sub-items get dotted row numbers (1.1, 1.2).
+
+### Sub-Item Merging (Balance/Allocation)
+
+When a GL page has both Balance and Allocation columns, `handle_auto_extract()` in `match_sub_item/handler.py` groups amounts by `table_row_index` and merges same-row amounts into a single sub-item proposal. The `SubItem.amounts` field holds multiple amounts (e.g., `[19.16, 2.68]`), displayed in the UI as `$19.16 / $2.68`. Matching runs once per amount with OR logic — deduplicates candidates by page set, keeping the highest score.
+
 ### Multi-File Document Support (Virtual Pages)
 
-Multiple PDFs per budget item are assembled into a virtual document with sequential page numbers. `DocumentRef.source_files` maps virtual pages back to physical files via `page_offset`. Frontend resolves virtual pages to correct physical PDFs via `resolveVirtualPage()`. Flat files produce one-entry `source_files` for backward compatibility.
+Multiple PDFs per budget item are assembled into a virtual document with sequential page numbers. `DocumentRef.source_files` maps virtual pages back to physical files via `page_offset`. Frontend resolves virtual pages to correct physical PDFs via `resolveVirtualPage()` in `frontend/src/utils/virtualPages.js` (shared between `PDFViewer.jsx`, `ReconciliationReport.jsx`, and `csvExport.js`). Flat files produce one-entry `source_files` for backward compatibility. `getSourceFiles(doc)` in the same util provides backward-compat fallback using `LEGACY_FILENAME_MAP` for older reconciliation.json files without `source_files`.
 
 ### Caching and Incremental Processing
 
@@ -249,6 +283,27 @@ MAX_WORKERS=3
 - `API_BASE` — Set via `VITE_API_URL` env var; defaults to `''` (same-origin via CloudFront)
 - `DATA_BASE` — Always `''` (same-origin)
 
+### Frontend Utilities (`frontend/src/utils/`)
+
+| Module | Role |
+|--------|------|
+| `virtualPages.js` | Shared `resolveVirtualPage()` and `getSourceFiles()` for virtual→physical page resolution |
+| `csvExport.js` | CSV report generation (`generateReportCsv()`) and download (`downloadCsv()`) |
+| `budgetItemClassifier.js` | Budget item slug normalization and PDF file classification |
+| `keywordSync.js` | Keyword synchronization between sub-items and matching |
+
+### Frontend Components (`frontend/src/components/`)
+
+| Component | Role |
+|-----------|------|
+| `PDFViewer.jsx` | PDF rendering, highlights, search, page-level Payment/Invoice toggles |
+| `LineItemCard.jsx` | Sidebar card with read-only Payment/Invoice checkboxes, sub-item list |
+| `ReconciliationReport.jsx` | Report modal body: two-section item list, expandable sub-items, CSV export |
+| `CreateSubItemDialog.jsx` | Auto-extract and manual sub-item creation dialog |
+| `FilterBar.jsx` | Budget item and match type filters |
+| `SearchBar.jsx` | Text search within PDF pages |
+| `Stats.jsx` | Match quality statistics |
+
 ## Budget Item Naming
 
 **CSV normalization (`budget_items.py`):** Case-insensitive, handles underscores/spaces. `SALARY_TOTAL` → `Salary`, `SPACE_RENTAL` → `Space Rental/Occupancy Costs`.
@@ -275,5 +330,23 @@ MAX_WORKERS=3
 backend/jobs/<job_id>/artifacts/
 ├── reconciliation.json   # Main output consumed by frontend
 ├── index.sqlite          # Extraction cache (local only)
-└── user_edits.json       # Optional manual overrides
+└── user_edits.json       # User overrides, sub-items, and completion_status
+```
+
+`user_edits.json` structure:
+```json
+{
+  "overrides": [...],
+  "sub_items": [...],
+  "completion_status": {
+    "row_51": {
+      "payment": [{"page": 3, "doc_id": "telecommunications"}],
+      "invoice": [{"page": 7, "doc_id": "telecommunications"}]
+    },
+    "row_51_a": {
+      "payment": [{"page": 3, "doc_id": "telecommunications"}],
+      "invoice": []
+    }
+  }
+}
 ```

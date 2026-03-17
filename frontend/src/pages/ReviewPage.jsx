@@ -5,6 +5,7 @@ import { authFetch } from "../services/authenticatedFetch";
 import LineItemCard from "../components/LineItemCard";
 import PDFViewer from "../components/PDFViewer";
 import FilterBar from "../components/FilterBar";
+import ReconciliationReport from "../components/ReconciliationReport";
 import "./ReviewPage.css";
 
 const POLL_INTERVAL_MS = 5000;
@@ -23,7 +24,6 @@ function ReviewPage() {
   const [selectedItem, setSelectedItem] = useState(null);
   const [verificationMode, setVerificationMode] =
     useState("needs-verification");
-  const [completedItems, setCompletedItems] = useState(new Set());
   const [showSummary, setShowSummary] = useState(false);
   const [minConfidenceScore, setMinConfidenceScore] = useState(0.5);
 
@@ -31,6 +31,7 @@ function ReviewPage() {
   const [userEditedCandidates, setUserEditedCandidates] = useState({});
   const [userAnnotations, setUserAnnotations] = useState({});
   const [subItems, setSubItems] = useState({}); // { parentRowId: SubItem[] }
+  const [completionStatus, setCompletionStatus] = useState({}); // { rowId: { payment: bool, invoice: bool } }
   const editsLoadedRef = useRef(false);
   const saveTimerRef = useRef(null);
 
@@ -85,11 +86,15 @@ function ReviewPage() {
       // Pipeline done but first fetch failed — retry once
       const retried = await tryLoadReconciliation();
       if (!retried) {
-        setError("Processing completed but reconciliation data could not be loaded.");
+        setError(
+          "Processing completed but reconciliation data could not be loaded.",
+        );
         setLoading(false);
       }
     } else {
-      setError(`Job status: ${status || "unknown"}. The processing pipeline may not have started.`);
+      setError(
+        `Job status: ${status || "unknown"}. The processing pipeline may not have started.`,
+      );
       setLoading(false);
     }
   };
@@ -125,7 +130,8 @@ function ReviewPage() {
       const resp = await authFetch(`${API_BASE}/api/jobs/${jobId}/edits`);
       if (!resp.ok) return;
       const edits = await resp.json();
-      if (edits.edited_candidates) setUserEditedCandidates(edits.edited_candidates);
+      if (edits.edited_candidates)
+        setUserEditedCandidates(edits.edited_candidates);
       if (edits.annotations) setUserAnnotations(edits.annotations);
       if (edits.sub_items?.length > 0) {
         const grouped = {};
@@ -135,6 +141,7 @@ function ReviewPage() {
         }
         setSubItems(grouped);
       }
+      if (edits.completion_status) setCompletionStatus(edits.completion_status);
     } catch {
       // Edits not available — start fresh
     } finally {
@@ -142,32 +149,47 @@ function ReviewPage() {
     }
   };
 
-  const saveUserEdits = useCallback((candidates, annotations, subs) => {
-    if (!editsLoadedRef.current) return;
+  const saveUserEdits = useCallback(
+    (candidates, annotations, subs, completion) => {
+      if (!editsLoadedRef.current) return;
 
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = setTimeout(async () => {
-      try {
-        const allSubItems = Object.values(subs).flat();
-        await authFetch(`${API_BASE}/api/jobs/${jobId}/edits`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            edited_candidates: candidates,
-            annotations: annotations,
-            sub_items: allSubItems,
-          }),
-        });
-      } catch {
-        // Silent fail — edits will be retried on next change
-      }
-    }, SAVE_DEBOUNCE_MS);
-  }, [jobId]);
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = setTimeout(async () => {
+        try {
+          const allSubItems = Object.values(subs).flat();
+          await authFetch(`${API_BASE}/api/jobs/${jobId}/edits`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              edited_candidates: candidates,
+              annotations: annotations,
+              sub_items: allSubItems,
+              completion_status: completion,
+            }),
+          });
+        } catch {
+          // Silent fail — edits will be retried on next change
+        }
+      }, SAVE_DEBOUNCE_MS);
+    },
+    [jobId],
+  );
 
   // Auto-save when edits change
   useEffect(() => {
-    saveUserEdits(userEditedCandidates, userAnnotations, subItems);
-  }, [userEditedCandidates, userAnnotations, subItems, saveUserEdits]);
+    saveUserEdits(
+      userEditedCandidates,
+      userAnnotations,
+      subItems,
+      completionStatus,
+    );
+  }, [
+    userEditedCandidates,
+    userAnnotations,
+    subItems,
+    completionStatus,
+    saveUserEdits,
+  ]);
 
   const addSubItem = useCallback((subItem) => {
     setSubItems((prev) => {
@@ -186,20 +208,87 @@ function ReviewPage() {
   const removeSubItem = useCallback((parentRowId, subItemId) => {
     setSubItems((prev) => {
       const parentList = (prev[parentRowId] || []).filter(
-        (si) => si.sub_item_id !== subItemId
+        (si) => si.sub_item_id !== subItemId,
       );
       const updated = { ...prev, [parentRowId]: parentList };
       if (parentList.length === 0) delete updated[parentRowId];
       return updated;
     });
+    setCompletionStatus((prev) => {
+      const next = { ...prev };
+      delete next[subItemId];
+      return next;
+    });
   }, []);
+
+  const togglePageEvidence = useCallback((rowId, field, pageNum, docId) => {
+    setCompletionStatus((prev) => {
+      const current = prev[rowId] || { payment: [], invoice: [] };
+      const arr = Array.isArray(current[field]) ? current[field] : [];
+      const existingIdx = arr.findIndex(
+        (e) => e.page === pageNum && e.doc_id === docId,
+      );
+      const updated =
+        existingIdx >= 0
+          ? arr.filter((_, i) => i !== existingIdx)
+          : [...arr, { page: pageNum, doc_id: docId }];
+      return { ...prev, [rowId]: { ...current, [field]: updated } };
+    });
+  }, []);
+
+  const getLineItemCompletionStatus = useCallback(
+    (rowId) => {
+      const subs = subItems[rowId] || [];
+      if (subs.length === 0) {
+        const status = completionStatus[rowId] || { payment: [], invoice: [] };
+        const payArr = Array.isArray(status.payment) ? status.payment : [];
+        const invArr = Array.isArray(status.invoice) ? status.invoice : [];
+        return { payment: payArr.length > 0, invoice: invArr.length > 0 };
+      }
+      const allPayment = subs.every((si) => {
+        const s = completionStatus[si.sub_item_id] || {
+          payment: [],
+          invoice: [],
+        };
+        return Array.isArray(s.payment) && s.payment.length > 0;
+      });
+      const allInvoice = subs.every((si) => {
+        const s = completionStatus[si.sub_item_id] || {
+          payment: [],
+          invoice: [],
+        };
+        return Array.isArray(s.invoice) && s.invoice.length > 0;
+      });
+      return { payment: allPayment, invoice: allInvoice };
+    },
+    [completionStatus, subItems],
+  );
+
+  const isItemCompleted = useCallback(
+    (rowId) => {
+      const status = getLineItemCompletionStatus(rowId);
+      return status.payment && status.invoice;
+    },
+    [getLineItemCompletionStatus],
+  );
+
+  const getCompletionPages = useCallback(
+    (rowId) => {
+      const status = completionStatus[rowId] || { payment: [], invoice: [] };
+      return {
+        payment: Array.isArray(status.payment) ? status.payment : [],
+        invoice: Array.isArray(status.invoice) ? status.invoice : [],
+      };
+    },
+    [completionStatus],
+  );
 
   const getNextSubItemSuffix = useCallback(
     (parentRowId) => {
       const existing = subItems[parentRowId] || [];
       return String.fromCharCode(97 + existing.length); // a, b, c, ...
     },
-    [subItems]
+    [subItems],
   );
 
   // Shape a sub-item to look like a line item for PDFViewer
@@ -209,6 +298,7 @@ function ReviewPage() {
     budget_item: parentItem.budget_item,
     raw: {
       amount: subItem.amount,
+      amounts: subItem.amounts || [],
       explanation: subItem.label,
     },
     normalized: {
@@ -227,46 +317,22 @@ function ReviewPage() {
     _label: subItem.label,
   });
 
-  const markGroupDone = (rowId) => {
-    const isCurrentlyCompleted = completedItems.has(rowId);
-
-    if (isCurrentlyCompleted) {
-      setCompletedItems((prev) => {
-        const newSet = new Set(prev);
-        newSet.delete(rowId);
-        return newSet;
-      });
-    } else {
-      if (verificationMode === "needs-verification") {
-        const currentIndex = filteredItems.findIndex(
-          (item) => item.row_id === rowId,
-        );
-
-        let nextItem = null;
-        if (currentIndex >= 0 && currentIndex < filteredItems.length - 1) {
-          nextItem = filteredItems[currentIndex + 1];
-        } else if (currentIndex > 0) {
-          nextItem = filteredItems[0];
-        }
-
-        setCompletedItems((prev) => new Set([...prev, rowId]));
-        setSelectedItem(nextItem);
-      } else {
-        setCompletedItems((prev) => new Set([...prev, rowId]));
-      }
-    }
-  };
-
   const filterCandidates = (candidates) => {
     if (!candidates) return [];
-    return candidates.filter(c => c.score >= minConfidenceScore);
+    return candidates.filter((c) => c.score >= minConfidenceScore);
   };
 
   const applyConfidenceFilter = (item) => {
     const filteredCandidates = filterCandidates(item.candidates);
 
-    const hasMatchingDoc = item.candidates && item.candidates.length > 0 && item.candidates[0].doc_id;
-    const allFiltered = filteredCandidates.length === 0 && item.candidates && item.candidates.length > 0;
+    const hasMatchingDoc =
+      item.candidates &&
+      item.candidates.length > 0 &&
+      item.candidates[0].doc_id;
+    const allFiltered =
+      filteredCandidates.length === 0 &&
+      item.candidates &&
+      item.candidates.length > 0;
 
     if (allFiltered && hasMatchingDoc) {
       return {
@@ -275,19 +341,20 @@ function ReviewPage() {
         selected_evidence: {
           doc_id: item.candidates[0].doc_id,
           page_numbers: [],
-          selection_source: "auto"
-        }
+          selection_source: "auto",
+        },
       };
     }
 
     return {
       ...item,
-      candidates: filteredCandidates
+      candidates: filteredCandidates,
     };
   };
 
   const getMatchType = (item) => {
-    if (item.raw?.amount == null || item.raw?.amount === 0) return "zero-amount";
+    if (item.raw?.amount == null || item.raw?.amount === 0)
+      return "zero-amount";
     if (item.selected_evidence?.doc_id === null) return "no-pdf";
     if (!item.candidates || item.candidates.length === 0) return "none";
 
@@ -314,7 +381,7 @@ function ReviewPage() {
 
   const filteredItems =
     data?.line_items
-      ?.map(item => applyConfidenceFilter(item))
+      ?.map((item) => applyConfidenceFilter(item))
       ?.filter((item) => {
         if (
           selectedBudgetItem !== "all" &&
@@ -329,7 +396,7 @@ function ReviewPage() {
 
         if (
           verificationMode === "needs-verification" &&
-          completedItems.has(item.row_id)
+          isItemCompleted(item.row_id)
         ) {
           return false;
         }
@@ -343,10 +410,13 @@ function ReviewPage() {
         <div className="loading-content">
           <h1>Processing Invoice Data</h1>
           <p className="processing-subtitle">
-            Extracting text, analyzing documents, and matching line items to evidence.
+            Extracting text, analyzing documents, and matching line items to
+            evidence.
           </p>
           <div className="loading-spinner"></div>
-          <p className="processing-status">This page will update automatically when processing is complete.</p>
+          <p className="processing-status">
+            This page will update automatically when processing is complete.
+          </p>
         </div>
       </div>
     );
@@ -375,11 +445,6 @@ function ReviewPage() {
     );
   }
 
-  const incompleteItems =
-    data?.line_items
-      ?.map(item => applyConfidenceFilter(item))
-      ?.filter((item) => !completedItems.has(item.row_id)) || [];
-
   return (
     <div className="review-page">
       <header className="review-header">
@@ -399,76 +464,25 @@ function ReviewPage() {
         <div className="summary-overlay" onClick={() => setShowSummary(false)}>
           <div className="summary-modal" onClick={(e) => e.stopPropagation()}>
             <div className="summary-header">
-              <h2>Reconciliation Summary</h2>
-              <button
-                className="close-btn"
-                onClick={() => setShowSummary(false)}
-              >
+              <h2>Reconciliation Report</h2>
+              <button className="close-btn" onClick={() => setShowSummary(false)}>
                 ×
               </button>
             </div>
             <div className="summary-body">
-              {incompleteItems.length === 0 ? (
-                <div className="summary-complete">
-                  <div className="complete-icon">&#10003;</div>
-                  <h3>All Items Verified!</h3>
-                  <p>
-                    Every line item has been marked as done. The reconciliation
-                    is complete.
-                  </p>
-                </div>
-              ) : (
-                <>
-                  <div className="summary-intro">
-                    <p>
-                      <strong>{incompleteItems.length}</strong> line item
-                      {incompleteItems.length !== 1 ? "s" : ""} still need
-                      {incompleteItems.length === 1 ? "s" : ""} verification:
-                    </p>
-                  </div>
-                  <div className="summary-list">
-                    {incompleteItems.map((item) => (
-                      <div
-                        key={item.row_id}
-                        className="summary-item"
-                        onClick={() => {
-                          setSelectedItem(item);
-                          setShowSummary(false);
-                        }}
-                      >
-                        <div className="summary-item-header">
-                          <span className="summary-row">
-                            #{item.row_index + 1}
-                          </span>
-                          <span className="summary-budget">
-                            {item.budget_item}
-                          </span>
-                        </div>
-                        {item.raw?.amount && item.raw.amount > 0 && (
-                          <div className="summary-amount">
-                            ${parseFloat(item.raw.amount).toFixed(2)}
-                          </div>
-                        )}
-                        {(item.raw?.employee_first_name ||
-                          item.raw?.employee_last_name) && (
-                          <div className="summary-employee">
-                            {item.raw.employee_first_name}{" "}
-                            {item.raw.employee_last_name}
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </>
-              )}
-            </div>
-            <div className="summary-footer">
-              <button
-                className="summary-close-btn"
-                onClick={() => setShowSummary(false)}
-              >
-                {incompleteItems.length === 0 ? "Close" : "Continue Reviewing"}
-              </button>
+              <ReconciliationReport
+                lineItems={data?.line_items?.map(item => applyConfidenceFilter(item)) || []}
+                subItems={subItems}
+                documents={data?.documents || []}
+                completionStatus={completionStatus}
+                getLineItemCompletionStatus={getLineItemCompletionStatus}
+                getCompletionPages={getCompletionPages}
+                onNavigateToItem={(item) => {
+                  setSelectedItem(item);
+                  setShowSummary(false);
+                }}
+                onClose={() => setShowSummary(false)}
+              />
             </div>
           </div>
         </div>
@@ -477,7 +491,9 @@ function ReviewPage() {
       <div className="review-body">
         <aside className="sidebar">
           <FilterBar
-            budgetItems={[...new Set(data?.documents?.map((d) => d.budget_item) || [])]}
+            budgetItems={[
+              ...new Set(data?.documents?.map((d) => d.budget_item) || []),
+            ]}
             selectedBudgetItem={selectedBudgetItem}
             setSelectedBudgetItem={setSelectedBudgetItem}
             selectedMatchType={selectedMatchType}
@@ -501,16 +517,20 @@ function ReviewPage() {
                   item={item}
                   matchType={getMatchType(item)}
                   isSelected={selectedItem?.row_id === item.row_id}
-                  isCompleted={completedItems.has(item.row_id)}
+                  isCompleted={isItemCompleted(item.row_id)}
                   onClick={() => setSelectedItem(item)}
                   subItems={subItems[item.row_id] || []}
-                  selectedSubItemId={selectedItem?._isSubItem ? selectedItem.row_id : null}
+                  selectedSubItemId={
+                    selectedItem?._isSubItem ? selectedItem.row_id : null
+                  }
                   onSubItemClick={(subItem) =>
                     setSelectedItem(shapeSubItemAsLineItem(subItem, item))
                   }
                   onRemoveSubItem={(subItemId) =>
                     removeSubItem(item.row_id, subItemId)
                   }
+                  completionStatus={getLineItemCompletionStatus(item.row_id)}
+                  subItemCompletionStatus={completionStatus}
                 />
               ))}
             </div>
@@ -523,8 +543,6 @@ function ReviewPage() {
               item={selectedItem}
               documents={data.documents}
               matchType={getMatchType(selectedItem)}
-              onMarkGroupDone={markGroupDone}
-              isCompleted={completedItems.has(selectedItem.row_id)}
               jobId={jobId}
               userEditedCandidates={userEditedCandidates}
               setUserEditedCandidates={setUserEditedCandidates}
@@ -533,7 +551,16 @@ function ReviewPage() {
               onAddSubItem={addSubItem}
               onAddSubItems={addSubItems}
               getNextSubItemSuffix={getNextSubItemSuffix}
-              subItems={subItems[selectedItem?._isSubItem ? selectedItem._parentRowId : selectedItem?.row_id] || []}
+              subItems={
+                subItems[
+                  selectedItem?._isSubItem
+                    ? selectedItem._parentRowId
+                    : selectedItem?.row_id
+                ] || []
+              }
+              completionPages={getCompletionPages(selectedItem?.row_id)}
+              onTogglePageEvidence={togglePageEvidence}
+              itemRowId={selectedItem?.row_id}
             />
           ) : (
             <div className="empty-state">

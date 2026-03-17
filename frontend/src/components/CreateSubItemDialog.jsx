@@ -228,6 +228,7 @@ function CreateSubItemDialog({
           budget_item: budgetItem,
           keywords: kws,
           amount: proposal.amount,
+          amounts: proposal.amounts || [],
           source_page: sourcePage,
           row_texts: proposal.row_texts || [],
           table_row_texts: proposal.table_row_texts || [],
@@ -268,6 +269,7 @@ function CreateSubItemDialog({
         doc_id: docId,
         keywords: proposal.keywords || [],
         amount: proposal.amount,
+        amounts: proposal.amounts || [],
         source_page: sourcePage,
         candidates: matched.candidates || [],
         selected_evidence: matched.selectedEvidence,
@@ -437,13 +439,23 @@ function CreateSubItemDialog({
                             value={p.label}
                             onChange={e => updateProposalLabel(idx, e.target.value)}
                           />
-                          <input
-                            type="number"
-                            className="proposal-amount"
-                            step="0.01"
-                            value={p.amount ?? ''}
-                            onChange={e => updateProposalAmount(idx, e.target.value)}
-                          />
+                          {p.amounts && p.amounts.length > 1 ? (
+                            <div className="proposal-amounts-merged">
+                              {p.amounts.map((amt, i) => (
+                                <span key={i} className="merged-amount-pill">
+                                  ${amt.toFixed(2)}
+                                </span>
+                              ))}
+                            </div>
+                          ) : (
+                            <input
+                              type="number"
+                              className="proposal-amount"
+                              step="0.01"
+                              value={p.amount ?? ''}
+                              onChange={e => updateProposalAmount(idx, e.target.value)}
+                            />
+                          )}
                           <button
                             className="proposal-expand-toggle"
                             onClick={() => toggleRowExpanded(idx)}

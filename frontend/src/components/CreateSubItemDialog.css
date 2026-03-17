@@ -467,3 +467,20 @@
   gap: 0.5rem;
   width: 100%;
 }
+
+.proposal-amounts-merged {
+  display: flex;
+  gap: 0.25rem;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.merged-amount-pill {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.75rem;
+  padding: 0.125rem 0.375rem;
+  background: rgba(43, 76, 126, 0.08);
+  border-radius: 3px;
+  color: #2b4c7e;
+  white-space: nowrap;
+}
