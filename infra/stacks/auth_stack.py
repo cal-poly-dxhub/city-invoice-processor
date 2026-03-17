@@ -17,7 +17,7 @@ class AuthStack(Stack):
 
         # Domain prefix must be globally unique across all AWS accounts.
         # Override via CDK context: cdk deploy -c cognito_domain_prefix=my-prefix
-        domain_prefix = self.node.try_get_context("cognito_domain_prefix") or "invoice-processor"
+        domain_prefix = self.node.try_get_context("cognito_domain_prefix") or "invoice-processor-sandbox"
 
         # --- Cognito User Pool ---
         self.user_pool = cognito.UserPool(
